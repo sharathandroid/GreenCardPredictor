@@ -226,19 +226,34 @@ public class PredictionService {
         }
 
         // 1. Anchor to Official Visa Bulletin Dates
+        String shutdownNote = applicant.isConsularShutdown() ? " [CONSULAR SHUTDOWN MODE ACTIVE: EB2 PRIORITIZED]" : "";
+
         if (estimate.unauthorized()) {
+            // FIX (2026-09-26): Final Action Unauthorized does NOT mean
+            // filing is unavailable -- see estimateWait()'s Javadoc. Filing
+            // is still computed and reported normally; only final action
+            // collapses to "Unauthorized this FY".
+            long filingWaitMonths = estimate.filingWaitMonths();
+            LocalDate filingDate = LocalDate.now().plusMonths(filingWaitMonths);
+            String formattedFilingWait = formatToMonthYear(filingDate);
+
             return PredictionResult.builder()
                     .restricted(false)
+                    .filingDate(filingDate)
+                    .filingWaitMonths(filingWaitMonths)
+                    .formattedFilingWait(formattedFilingWait)
+                    .finalActionWaitMonths(999)
+                    .formattedFinalActionWait("N/A (Unauthorized this FY)")
                     .explanation(String.format(
                         "The %s Visa Bulletin marks %s %s Final Action as \"Unauthorized\": the annual " +
                         "limit for this category/country has already been reached for the current fiscal " +
-                        "year. No further final action is possible until new numbers become available at " +
-                        "the start of the next fiscal year (normally October 1).%s",
-                        visaBulletinService.getBulletinMonth(), chargeabilityCountry, category, crossChargeabilityNote))
-                    .formattedFilingWait("N/A (Unauthorized this FY)")
-                    .formattedFinalActionWait("N/A (Unauthorized this FY)")
-                    .finalActionWaitMonths(999)
-                    .filingWaitMonths(999)
+                        "year. No further final action (green card approval) is possible until new numbers " +
+                        "become available at the start of the next fiscal year (normally October 1). Filing " +
+                        "(submitting the application, e.g. for interim benefits like work authorization) is " +
+                        "a separate chart and is NOT blocked by this -- Filing Cut-off: %s. Inventory + " +
+                        "I-140 Ahead of Filing PD: %d.%s",
+                        visaBulletinService.getBulletinMonth(), chargeabilityCountry, category,
+                        estimate.filingCutOff(), estimate.volumeAheadOfFiling(), crossChargeabilityNote))
                     .build();
         }
 
@@ -255,8 +270,6 @@ public class PredictionService {
 
         String formattedFinalActionWait = formatToMonthYear(finalActionDate);
         String formattedFilingWait = formatToMonthYear(filingDate);
-
-        String shutdownNote = applicant.isConsularShutdown() ? " [CONSULAR SHUTDOWN MODE ACTIVE: EB2 PRIORITIZED]" : "";
 
         return PredictionResult.builder()
                 .finalActionDate(finalActionDate)
@@ -284,31 +297,41 @@ public class PredictionService {
                                  LocalDate finalActionCutOff, long volumeAheadOfFiling, boolean unauthorized) {
     }
 
+    /**
+     * FIX (2026-09-26): "Final Action Unauthorized" and "Filing" are two
+     * separate charts on the real Visa Bulletin (Chart A vs. Chart B) --
+     * DOS can, and currently does for India EB2, mark Final Action
+     * Unauthorized (the annual ceiling is hit, no more green cards can be
+     * approved this FY) while STILL publishing a real Filing cutoff date, so
+     * people can submit their I-485/DS-260 and get interim benefits (EAD/AP)
+     * while waiting for final numbers. This method used to short-circuit
+     * BOTH filing and final action into "N/A (Unauthorized)" the moment
+     * final action was unauthorized -- meaning even a 2011 priority date
+     * (15 years senior to India EB2's actual 2015-01-15 filing cutoff) got
+     * told it couldn't file at all, which is simply wrong. Filing is now
+     * always computed from its own cutoff/volume, independent of final
+     * action's authorization status; only final action collapses to
+     * "Unauthorized" when that's actually true.
+     */
     private WaitEstimate estimateWait(Country chargeabilityCountry, EbCategory category, LocalDate applicantPD,
                                        Map<Country, Map<EbCategory, Double>> supplyMap) {
-        if (visaBulletinService.isFinalActionUnauthorized(chargeabilityCountry, category)) {
-            return new WaitEstimate(999, 999, null, null, 0, true);
-        }
-
         double annualSupply = supplyMap.get(chargeabilityCountry).get(category);
         LocalDate filingCutOff = visaBulletinService.getFilingCutOff(chargeabilityCountry, category);
-        LocalDate finalActionCutOff = visaBulletinService.getFinalActionCutOff(chargeabilityCountry, category);
 
         long volumeAheadOfFiling = excelDataService.getInventoryBetween(chargeabilityCountry, category, filingCutOff, applicantPD);
         volumeAheadOfFiling += excelDataService.getI140Between(chargeabilityCountry, category, filingCutOff, applicantPD);
 
+        long filingWaitMonths = annualSupply > 0 ? (long) ((volumeAheadOfFiling / annualSupply) * 12) : 300;
+
+        if (visaBulletinService.isFinalActionUnauthorized(chargeabilityCountry, category)) {
+            return new WaitEstimate(filingWaitMonths, 999, filingCutOff, null, volumeAheadOfFiling, true);
+        }
+
+        LocalDate finalActionCutOff = visaBulletinService.getFinalActionCutOff(chargeabilityCountry, category);
         long volumeAheadOfFinalAction = excelDataService.getInventoryBetween(chargeabilityCountry, category, finalActionCutOff, applicantPD);
         volumeAheadOfFinalAction += excelDataService.getI140Between(chargeabilityCountry, category, finalActionCutOff, applicantPD);
 
-        long finalWaitMonths;
-        long filingWaitMonths;
-        if (annualSupply > 0) {
-            filingWaitMonths = (long) ((volumeAheadOfFiling / annualSupply) * 12);
-            finalWaitMonths = (long) ((volumeAheadOfFinalAction / annualSupply) * 12);
-        } else {
-            finalWaitMonths = 600;
-            filingWaitMonths = 300;
-        }
+        long finalWaitMonths = annualSupply > 0 ? (long) ((volumeAheadOfFinalAction / annualSupply) * 12) : 600;
 
         return new WaitEstimate(filingWaitMonths, finalWaitMonths, filingCutOff, finalActionCutOff, volumeAheadOfFiling, false);
     }

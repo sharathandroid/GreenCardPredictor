@@ -120,17 +120,54 @@ class PredictionServiceTest {
         // GAPS_AND_FIXES.md #4. This used to silently fall back to a wide-open
         // 2010-01-01 cutoff (the opposite of correct); now it's a distinct, explained
         // outcome.
+        //
+        // UPDATED 2026-09-26: Final Action Unauthorized used to also force Filing to
+        // "N/A" -- wrong, since Filing (Chart B) is a separate cutoff DOS publishes
+        // independently of Final Action's authorization status (see
+        // PredictionService.estimateWait()'s Javadoc, filed after a user reported that
+        // a 2011 priority date -- years senior to India EB2's real 2015-01-15 filing
+        // cutoff -- was being told it couldn't even file). This priority date
+        // (2019-12-12) is AFTER the filing cutoff, so it correctly still has a real,
+        // positive filing wait rather than being current; testPredictForIndiaEB2
+        // FilingAheadOfUnauthorizedCutoff below covers the "already past the filing
+        // cutoff" case directly.
         Applicant applicant = new Applicant(Country.INDIA, EbCategory.EB2, LocalDate.of(2019, 12, 12));
         PredictionResult result = predictionService.predict(applicant);
 
         assertNotNull(result);
         assertFalse(result.isRestricted(), "Unauthorized-this-FY is a different state from country-restricted");
-        assertEquals("N/A (Unauthorized this FY)", result.getFormattedFilingWait());
+        assertNotEquals("N/A (Unauthorized this FY)", result.getFormattedFilingWait(),
+            "Filing is a separate chart from Final Action and should not be blocked by Final Action Unauthorized");
         assertEquals("N/A (Unauthorized this FY)", result.getFormattedFinalActionWait());
-        assertEquals(999, result.getFilingWaitMonths());
+        assertTrue(result.getFilingWaitMonths() >= 0 && result.getFilingWaitMonths() < 999,
+            "Filing wait should be a real computed value, not the 999 Unauthorized sentinel");
         assertEquals(999, result.getFinalActionWaitMonths());
+        assertNotNull(result.getFilingDate(), "Filing date should be populated even though final action is Unauthorized");
+        assertNull(result.getFinalActionDate());
         assertTrue(result.getExplanation().contains("Unauthorized"));
+        assertTrue(result.getExplanation().contains("Filing"), "Explanation should clarify filing is a separate, unblocked chart");
         System.out.println("[DEBUG_LOG] India EB2 (Unauthorized) Explanation: " + result.getExplanation());
+    }
+
+    @Test
+    void testPredictForIndiaEB2FilingAheadOfUnauthorizedCutoff() {
+        // Regression test for the exact bug a user reported: India EB2, priority date
+        // 2011-01-01 -- 4 years senior to India EB2's real September 2026 Filing
+        // cutoff (2015-01-15) -- was being told Filing was "N/A (Unauthorized this FY)"
+        // even though Final Action Unauthorized has nothing to do with Filing
+        // eligibility. A priority date already past the filing cutoff should show as
+        // current/available for filing (0 months) regardless of Final Action's status.
+        Applicant applicant = new Applicant(Country.INDIA, EbCategory.EB2, LocalDate.of(2011, 1, 1));
+        PredictionResult result = predictionService.predict(applicant);
+
+        assertNotNull(result);
+        assertEquals(0, result.getFilingWaitMonths(),
+            "A priority date already past the filing cutoff should be current for filing");
+        assertEquals(999, result.getFinalActionWaitMonths());
+        assertEquals("N/A (Unauthorized this FY)", result.getFormattedFinalActionWait());
+        assertNotEquals("N/A (Unauthorized this FY)", result.getFormattedFilingWait());
+        System.out.println("[DEBUG_LOG] India EB2 2011 PD Filing: " + result.getFormattedFilingWait()
+            + " / Final Action: " + result.getFormattedFinalActionWait());
     }
 
     @Test
