@@ -50,27 +50,34 @@ kept as a record of what was checked and why, including one wrong filename guess
   last *completed* fiscal year (FY2025, Oct 2024–Sep 2025) as of this writing, whereas the FY2026
   Q3 file only has 9 months of the current, still-open fiscal year.
 
-## 4. FB-to-EB spillover figure — real data now, with two documented gaps remaining
+## 4. FB-to-EB spillover figure — DONE, using real DOS Table VI data (2026-09-26)
 
-`getFamilyVisasUsedPriorFiscalYear()` now returns a real number (433,071) parsed from
-`quarterly_all_forms_fy2025_q4_v1.xlsx`'s domestic I-485 "(Family)" row's fiscal-year-to-date
-Approved column — see the method's Javadoc in `ExcelDataService.java` for exactly which cell.
-This is closer to correct than the flat 226,000 placeholder it replaced, but it is **not** the
-authoritative figure, for two reasons that remain open:
+`travel.state.gov` was unreachable from this environment for the entire session (HTTP 403 on every
+direct attempt via `curl` and via an authenticated web-fetch tool, and every Wayback Machine
+snapshot since July 2024 captured a Cloudflare block page instead of the real site). The project
+owner had independent access and provided the actual source directly: the Department of State's
+**Report of the Visa Office**, **Table VI** ("Preference Visas Issued" — visas issued at Foreign
+Service posts abroad, i.e. consular issuance, split by preference category), as five PDFs
+(`Table VI_PartI.pdf` through `PartV.pdf`, kept at the repo root).
 
-1. **Category mixing.** USCIS's public report doesn't split "(Family)" I-485 approvals between
-   uncapped immediate relatives and capped family-preference (F1–F4) categories. The 433,071
-   figure includes both, so it overstates true preference-only usage — which biases the resulting
-   spillover estimate toward 0 (conservative), not toward a fabricated positive number.
-2. **Consular issuances not included.** The authoritative combined source is the Department of
-   State's **Visa Office Annual Report**, Table VI ("Immigrant Visas Issued at Foreign Service
-   Posts by Foreign State of Chargeability and Preference Class"):
-   https://travel.state.gov/content/travel/en/legal/visa-law0/visa-statistics/annual-reports.html
-   — `travel.state.gov` returned HTTP 403 on every attempt from this environment, both via `curl`
-   (with a browser User-Agent) and via an authenticated web-fetch tool, confirmed 2026-09-26. This
-   half of the figure (immigrant visas issued abroad, which also count against the family limit)
-   could not be incorporated here. If you have network access this sandbox doesn't, fetching Table
-   VI and adding it to the domestic I-485 figure above would close this gap.
+`getFamilyVisasUsedPriorFiscalYear()` now returns Table VI Part I's real family-preference grand
+total for FY2024: **205,762** — see `family-visa-usage.yml` and `ExcelDataService.loadFamilyVisaUsage()`.
+This replaces an earlier, domestic-only figure (433,071, mixed with uncapped immediate relatives,
+parsed from a USCIS quarterly workbook) entirely, rather than trying to combine the two — they were
+different fiscal years and different, incompatible category breakdowns.
+
+Two caveats remain, documented in the data file itself:
+
+1. **It's FY2024, not FY2026.** FY2026 — the year actually containing the Jan 2026 travel-ban
+   restrictions and the Aug–Sep 2026 consular closure — hadn't closed by the time this was fixed,
+   so its Table VI isn't published yet. FY2024 is the most recent real anchor available, not a
+   measurement of that disruption's actual effect.
+2. **Still consular-only.** It excludes domestic USCIS family-preference I-485 adjustments (a
+   different, smaller subset of what the old 433,071 figure counted), so it's a slight
+   understatement of true total usage — biasing any spillover estimate a bit high, not low.
+
+If a future edition of Table VI (FY2025, or ideally FY2026 once published) becomes available,
+swapping the numbers in `family-visa-usage.yml` closes this out further with no code change needed.
 
 ## 5. Visa Bulletin (for `VisaBulletinService`)
 

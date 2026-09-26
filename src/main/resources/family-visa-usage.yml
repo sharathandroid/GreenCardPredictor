@@ -1,0 +1,37 @@
+# Source: DOS Bureau of Consular Affairs, Report of the Visa Office, Table VI
+# ("Preference Visas Issued") -- provided directly by the project owner on
+# 2026-09-26 as five PDFs (Table VI_PartI.pdf through PartV.pdf, kept at the
+# repo root for provenance) after travel.state.gov proved unreachable from
+# this environment for the entire session (direct HTTP 403, and every
+# Wayback Machine snapshot since July 2024 captured a Cloudflare block page
+# instead of the real site). See DATA_SOURCES.md #4 and GAPS_AND_FIXES.md
+# #1/#9 for the full history of what was tried before this became available.
+#
+# Table VI specifically covers visas ISSUED AT FOREIGN SERVICE POSTS ABROAD
+# -- i.e. consular issuance only. It does NOT include USCIS domestic I-485
+# adjustments, and it does NOT include uncapped immediate relatives (DOS
+# reports those separately) -- so family-preference-consular-issued below is
+# a clean, preference-category-only figure, unlike the earlier domestic
+# I-485 "(Family)" figure this app used to use, which mixed both.
+#
+# IMPORTANT CAVEAT: this is Fiscal Year 2024 (Oct 2023-Sep 2024) -- the most
+# recent edition available, but NOT the same fiscal year that actually
+# contains the events this project cares about (the Jan 2026 travel-ban
+# restrictions and the Aug-Sep 2026 consular closure both fall in FY2026,
+# which hadn't closed yet as of this writing, so its Table VI won't exist
+# for months). Treat this as the best real anchor available, not a
+# measurement of FY2026's actual, disrupted usage -- see
+# getFamilyVisasUsedPriorFiscalYear()'s Javadoc for how that gap is handled.
+#
+# It also still excludes domestic USCIS I-485 family-preference adjustments
+# (those adjustments happen inside the US and aren't part of this DOS
+# report), which would add to real total usage and push it even closer to
+# (or over) the 226,000 floor -- meaning the figure below is a slight
+# UNDERSTATEMENT of true usage, biasing any resulting spillover estimate
+# toward being too large rather than too small. Bounded by 226,000 -
+# family-preference-consular-issued, i.e. at most ~20,238 -- nowhere near
+# the ~188,700 the earlier, invalid ratio-based estimate produced.
+family-visa-usage:
+  fiscal-year: 2024
+  family-preference-consular-issued: 205762
+  employment-preference-consular-issued: 49766

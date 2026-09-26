@@ -6,6 +6,7 @@ import org.innovativebrains.greencardpredictor.model.Country;
 import org.innovativebrains.greencardpredictor.model.EbCategory;
 import org.springframework.stereotype.Service;
 import org.springframework.core.io.ClassPathResource;
+import org.yaml.snakeyaml.Yaml;
 
 import jakarta.annotation.PostConstruct;
 import java.io.InputStream;
@@ -25,9 +26,10 @@ import java.util.Map;
  *     this fix -- still ~5 months behind "today," just less than the ~11
  *     months of staleness this replaced).
  *   - I-140 receipts/approvals by class and country: FY2026 Q3.
- *   - I-130/I-485 "quarterly all forms": FY2026 Q3 (current pending counts)
- *     plus FY2025 Q4 (the last *completed* fiscal year, used for prior-FY
- *     family-visa usage -- see below).
+ *   - I-130/I-485 "quarterly all forms": FY2026 Q3 (current pending counts).
+ *     Family-preference visa usage (for FB-to-EB spillover) is sourced
+ *     separately, from DOS's real Table VI data -- see
+ *     getFamilyVisasUsedPriorFiscalYear() below and family-visa-usage.yml.
  *
  * A prior pass guessed the I-140 replacement filename as "i140_fy2026_q2_v1
  * .xlsx" without downloading it; that guess was wrong -- it's a genuinely
@@ -52,15 +54,15 @@ public class ExcelDataService {
     private static final String INVENTORY_FILE = "eb_inventory_april_2026.xlsx";
     private static final String I140_FILE = "i140_rec_by_class_country_fy2026_q3_v1.xlsx";
     private static final String I130_FILE = "quarterly_all_forms_fy2026_q3_v1.xlsx";
-    private static final String PRIOR_COMPLETED_FY_ALL_FORMS_FILE = "quarterly_all_forms_fy2025_q4_v1.xlsx";
+    private static final String FAMILY_VISA_USAGE_FILE = "family-visa-usage.yml";
 
     private Map<String, Long> inventoryMap = new HashMap<>(); // Key: Country_Category, Value: Count
     private Map<String, Map<Integer, Long>> inventoryYearlyMap = new HashMap<>(); // Key: Country_Category, Value: Map<Year, Count>
     private Map<String, Long> i140ApprovedMap = new HashMap<>(); // Key: Country_Category, Value: Count
     private Map<String, Map<Integer, Long>> i140YearlyMap = new HashMap<>(); // Key: Country_Category, Value: Map<Year, Count>
     private long i130PendingCount = 0;
-    private long familyI485ApprovedPriorFY = 0;
-    private boolean familyI485DataLoaded = false;
+    private long familyPreferenceVisasIssuedPriorFY = 0;
+    private boolean familyVisaUsageDataLoaded = false;
 
     @PostConstruct
     public void init() {
@@ -255,104 +257,74 @@ public class ExcelDataService {
     }
 
     /**
-     * FIX (2026-09-26): parses USCIS's FY2025 Q4 "All Forms" report -- the
-     * last *completed* fiscal year as of this writing -- for the domestic
-     * I-485 "(Family)" category row. For a Q4/year-end report, that row's
-     * "Fiscal Year - To Date" Approved column (index 9) is the full FY2025
-     * total (433,071), not a partial-year figure.
+     * FIX (2026-09-26): parses family-visa-usage.yml, which holds the real
+     * DOS Table VI ("Preference Visas Issued") family-preference grand total
+     * -- provided directly by the project owner after travel.state.gov
+     * proved unreachable all session (see that file's own header comment for
+     * the full provenance and caveats, especially that it's FY2024, not
+     * FY2026). This replaces two earlier, weaker approaches tried in this
+     * same session:
      *
-     * REVERTED (same day): an earlier version of this method tried to weight
-     * that raw figure down using the immediate-relative/preference SPLIT
-     * RATIO observed in this same workbook's two I-130 rows (~8.6%
-     * preference), on the theory that the raw 433,071 overstates true
-     * family-preference-only usage (it mixes in uncapped immediate
-     * relatives). That produced ~37,300 -- which drove FB-to-EB spillover up
-     * to ~188,700 (226,000 - 37,300), nearly 2.4x the entire base 140,000 EB
-     * limit, and cascaded into obviously wrong predictions (e.g. a 2019
-     * priority date years behind the actual bulletin cutoff coming back as
-     * "current"). The ratio transfer was invalid: I-130 PETITION approvals
-     * this fiscal year and I-485 ADJUSTMENT approvals this fiscal year are
-     * not the same population sampled at the same point in time -- this
-     * year's approved preference-category I-130s mostly won't become I-485-
-     * eligible for years or decades (that's what the backlog IS), so this
-     * year's I-485 preference approvals actually trace back to petitions
-     * approved years ago, not a proportional slice of this year's I-130 mix.
-     * There's no valid same-year ratio to borrow here.
+     *  1. An I-130-approval-ratio-weighted estimate (~37,300) that was
+     *     invalid -- I-130 petition approvals and I-485 adjustment approvals
+     *     in the same fiscal year aren't the same population at the same
+     *     pipeline stage, so there's no valid same-year ratio to borrow.
+     *     Produced a spillover (~188,700) nearly 2.4x the entire base EB
+     *     limit and obviously wrong predictions.
+     *  2. The raw, unweighted domestic I-485 "(Family)" approval figure
+     *     (433,071, FY2025) -- real data, but mixes in uncapped immediate
+     *     relatives (not subject to the 226,000 cap) with capped
+     *     family-preference approvals, and covers domestic adjustments only.
      *
-     * Real-world family-preference usage is normally close to (often
-     * effectively AT) the 226,000 statutory floor, meaning true spillover is
-     * usually small or zero in most years -- so using the unweighted, mixed
-     * 433,071 figure directly is the more realistic choice: it still
-     * overstates preference-only usage (see the class Javadoc on
-     * getFamilyVisasUsedPriorFiscalYear() for why), which biases spillover
-     * toward 0 rather than toward a fabricated large number. Closing the
-     * remaining gap for real needs DOS's Table VI split by preference
-     * category, which travel.state.gov's blocking prevents fetching from
-     * this environment (see DATA_SOURCES.md #4).
+     * Table VI Part I's family-preference grand total (205,762) is a clean
+     * improvement on both: it's the real DOS figure, split by preference
+     * category already (no immediate-relative contamination), for actual
+     * consular issuances specifically -- the CONSULAR component that was
+     * always the fully-missing half of this figure. It still doesn't cover
+     * domestic USCIS I-485 family-preference-category adjustments (a
+     * different, smaller subset of what the old domestic figure counted,
+     * which this app doesn't have split out either), so it still
+     * UNDERSTATES true total usage somewhat -- but only by however much that
+     * additional domestic contribution really is, not by conflating entire
+     * unrelated categories or years the way the two prior attempts did.
      */
     private void loadFamilyVisaUsage() {
-        try (InputStream is = new ClassPathResource(PRIOR_COMPLETED_FY_ALL_FORMS_FILE).getInputStream();
-             Workbook workbook = new XSSFWorkbook(is)) {
-            Sheet sheet = workbook.getSheetAt(0);
-
-            for (int i = 0; i <= sheet.getLastRowNum(); i++) {
-                Row row = sheet.getRow(i);
-                if (row == null) continue;
-
-                Cell formCell = row.getCell(0);
-                Cell titleCell = row.getCell(1);
-                if (formCell == null || titleCell == null) continue;
-                if (!"I-485".equals(formCell.toString().trim())) continue;
-                if (!titleCell.toString().toUpperCase().contains("FAMILY")) continue;
-
-                Cell fytdApprovedCell = row.getCell(9); // "Approved" under "Fiscal Year - To Date"
-                if (fytdApprovedCell == null) continue;
-
-                try {
-                    familyI485ApprovedPriorFY = (long) Double.parseDouble(fytdApprovedCell.toString());
-                    familyI485DataLoaded = true;
-                } catch (NumberFormatException e) { }
-                break;
-            }
-            System.out.println("Loaded prior-completed-FY family visa usage (domestic I-485 Family approvals): " + familyI485ApprovedPriorFY);
+        try (InputStream is = new ClassPathResource(FAMILY_VISA_USAGE_FILE).getInputStream()) {
+            Map<String, Object> root = new Yaml().load(is);
+            @SuppressWarnings("unchecked")
+            Map<String, Object> section = (Map<String, Object>) root.get("family-visa-usage");
+            Object value = section.get("family-preference-consular-issued");
+            familyPreferenceVisasIssuedPriorFY = ((Number) value).longValue();
+            familyVisaUsageDataLoaded = true;
+            System.out.println("Loaded family-preference visa usage (DOS Table VI, FY"
+                    + section.get("fiscal-year") + " consular issuances): " + familyPreferenceVisasIssuedPriorFY);
         } catch (Exception e) {
-            System.err.println("Error loading prior-FY family visa usage: " + e.getMessage());
+            System.err.println("Error loading family visa usage: " + e.getMessage());
         }
     }
 
     /**
-     * FIX (2026-09-25, data wired in 2026-09-26): family-to-EB spillover must
-     * be driven by how many family-preference visas were actually ISSUED/USED
-     * in the prior fiscal year, not by the pending I-130 petition backlog
-     * (which is a multi-million-row demand queue, not a usage figure -- see
-     * GAPS_AND_FIXES.md item #1 for why the old formula always evaluated to
-     * zero).
+     * FIX (2026-09-25, real data wired in 2026-09-26): family-to-EB
+     * spillover must be driven by how many family-preference visas were
+     * actually ISSUED/USED in the prior fiscal year, not by the pending
+     * I-130 petition backlog (which is a multi-million-row demand queue, not
+     * a usage figure -- see GAPS_AND_FIXES.md item #1 for why the old
+     * formula always evaluated to zero).
      *
-     * This now returns FY2025's actual USCIS domestic I-485 "(Family)"
-     * approval count (433,071, loaded by loadFamilyVisaUsage() above). Two
-     * known, documented limitations remain (see loadFamilyVisaUsage()'s
-     * Javadoc for why an I-130-ratio-based refinement was tried and reverted,
-     * and DATA_SOURCES.md #4 for the sources that would close both):
-     *
-     *  1. USCIS's public report doesn't split "(Family)" approvals between
-     *     uncapped immediate relatives and capped family-preference (F1-F4)
-     *     categories, so this figure OVERSTATES true preference-only usage --
-     *     which biases the resulting spillover estimate toward 0 (never
-     *     fabricates an inflated spillover), not the other way around.
-     *  2. It covers domestic adjustments only. It excludes immigrant visas
-     *     issued abroad by consular posts (DOS Visa Office Annual Report
-     *     Table VI), which also count against the family limit.
-     *     travel.state.gov returned HTTP 403 on every direct attempt and on
-     *     every Wayback Machine snapshot since July 2024 (all later
-     *     snapshots captured a Cloudflare block page instead of the real
-     *     site), so that half of the figure could not be incorporated from
-     *     this environment.
+     * This now returns DOS's real, authoritative family-preference-only
+     * consular issuance count (205,762) from Table VI of the Report of the
+     * Visa Office -- see loadFamilyVisaUsage()'s Javadoc for how this
+     * replaced two weaker, session-local attempts, and family-visa-usage.yml
+     * for the full source provenance and remaining caveats (notably: this is
+     * FY2024, not FY2026, and it still excludes domestic USCIS
+     * family-preference I-485 adjustments, so it's a real but incomplete --
+     * and likely conservative-toward-understating -- figure).
      *
      * Falls back to the statutory floor (226,000, i.e. spillover = 0) if the
-     * source file or row can't be parsed, same fail-safe as before.
+     * source file can't be parsed, same fail-safe as before.
      */
     public long getFamilyVisasUsedPriorFiscalYear() {
-        return familyI485DataLoaded ? familyI485ApprovedPriorFY : 226_000L;
+        return familyVisaUsageDataLoaded ? familyPreferenceVisasIssuedPriorFY : 226_000L;
     }
 
     public long getInventoryCount(Country country, EbCategory category) {

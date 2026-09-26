@@ -244,16 +244,39 @@ January 2031 / Final Action October 2032 (annual supply ~9,807, essentially Indi
 and the total distributed across all countries and categories sums to exactly the 140,000 base
 limit (verified by summing every "FINAL SUPPLY" line in `calculateDynamicSupply`'s own debug output).
 
-## Data gap still open (not fixable from this environment)
+## 10. Real DOS Table VI data obtained — FIXED 2026-09-26
 
-- **Real family-preference visa usage** for `getFamilyVisasUsedPriorFiscalYear()` is a real, if
-  imperfect, figure (see `ExcelDataService.loadFamilyVisaUsage()`), but the authoritative source —
-  DOS's Visa Office Annual Report Table VI ("Immigrant Visas Issued at Foreign Service Posts") —
-  remains unreachable: `travel.state.gov` returns HTTP 403 on every direct attempt, and every
-  Wayback Machine snapshot since July 2024 captured a Cloudflare block page instead of the real
-  site (checked 2026-09-26). If you have network access this sandbox doesn't, fetching Table VI and
-  adding its consular-issuance figure to the domestic I-485 estimate already in place would close
-  this gap for good. See `DATA_SOURCES.md` #4.
+The family-preference-visa-usage gap above (originally #1, revisited in #9) is now closed with
+real data. `travel.state.gov` remained unreachable from this environment the entire session (HTTP
+403 on every direct attempt; every Wayback Machine snapshot since July 2024 captured a Cloudflare
+block page instead of the real site) — but the project owner had independent access and provided
+the DOS Bureau of Consular Affairs' Report of the Visa Office, Table VI ("Preference Visas Issued")
+directly, as five PDFs (`Table VI_PartI.pdf` through `PartV.pdf`, kept at the repo root for
+provenance).
+
+Table VI Part I's family-preference grand total for FY2024 is **205,762** — real, DOS-authoritative,
+split by preference category already (no immediate-relative contamination, unlike the domestic
+I-485 figure this app used before), and specifically the *consular* issuance count that was always
+the actually-missing half of this figure. `getFamilyVisasUsedPriorFiscalYear()` now returns this
+value directly (see `family-visa-usage.yml` and `ExcelDataService.loadFamilyVisaUsage()`), replacing
+the domestic-only, category-mixed 433,071 figure and its resource file entirely.
+
+**Two caveats remain, both documented on the data file itself:**
+1. **This is FY2024, not FY2026.** The events this project actually cares about (the Jan 2026
+   travel-ban restrictions, the Aug–Sep 2026 consular closure) fall in FY2026, which hadn't closed
+   by the time this was fixed — its Table VI won't be published for months. FY2024 is the most
+   recent real anchor available, not a measurement of the disruption's actual effect.
+2. **Still consular-only** — it excludes domestic USCIS family-preference I-485 adjustments (a
+   different, smaller subset than what the old domestic figure counted), so it's a slight
+   understatement of true total usage, biasing spillover estimates a bit high rather than low.
+
+With this real figure (205,762, close to but under the 226,000 floor), FB-to-EB spillover computes
+to a small, plausible **20,238** by default (206,000 → 226,000 gap) instead of either 0 (the old
+domestic-mixed figure, which sat comfortably above the floor) or the invalid ~188,700 from the
+reverted same-day ratio experiment (see #9). India/EB3/2019-12-16 — the running test case through
+this whole investigation — now returns Filing March 2029 / Final Action February 2030 (annual
+supply ~17,121), a real, defensible multi-year wait consistent with a priority date years behind
+the bulletin's cutoff, using genuinely current statutory mechanics and the best real data available.
 
 ## About GitHub repo access
 
