@@ -204,16 +204,50 @@ The four gaps originally listed here are now addressed:
   picks whichever is better; it never applies if it wouldn't help, or if the spouse's country is
   itself restricted. See `PredictionService.estimateWait()`/`WaitEstimate`.
 - **Config-driven restricted-country list** — moved from a hardcoded `EnumSet.of(...)` in
-  `Country.java` to `restricted-countries.properties`. `Country` fails loudly at class-load time if
-  that file is missing or names an unrecognized country, rather than silently under-restricting.
+  `Country.java` to `restricted-countries.yml` (parsed with SnakeYAML directly, since an enum can't
+  be a Spring-managed bean). `Country` fails loudly at class-load time if that file is missing or
+  names an unrecognized country, rather than silently under-restricting.
 - **Config-driven bulletin dates** — moved from hardcoded constructor calls in
-  `VisaBulletinService.java` to `visa-bulletin-current.properties`. Refreshing the bulletin monthly
-  is now a data-file edit, not a Java change/recompile.
+  `VisaBulletinService.java` to `visa-bulletin.yml`, bound via a real Spring Boot
+  `@ConfigurationProperties` bean (`VisaBulletinProperties`). Refreshing the bulletin monthly is now
+  a data-file edit, not a Java change/recompile.
+
+## 9. Two more bugs found while fixing the above — FIXED 2026-09-26
+
+Neither was on the original list; both were caught by manually sanity-checking a India/EB3/
+2019-12-16 prediction against the fixes above and noticing the result (a ~2-month wait for a
+priority date five years behind the bulletin's own cutoff) was obviously wrong.
+
+- **Every country was getting its own individual 7% allocation**, not just the five actually named
+  on the bulletin's per-country chart (India, China, Mexico, Philippines, Brazil).
+  `calculateDynamicSupply` special-cased only `Country.ROW`; every OTHER of the ~100 enum values
+  (nearly all of them near-zero real demand) also claimed a full 7% via the same `countryAnnualLimit`
+  path ROW itself was meant to represent in aggregate. That let the "unused" remainder from ~95
+  phantom allocations inflate the horizontal-redistribution pool far past the true global total.
+  **Fix:** only `INDIVIDUALLY_CAPPED_COUNTRIES` (the five named countries) get `countryAnnualLimit`;
+  everyone else gets 0 base allocation and can only receive supply via redistribution — matching how
+  "All Chargeability Areas Except Those Listed" actually works on the real Visa Bulletin, and
+  restoring the property that base allocations sum to exactly the total EB limit.
+- **The family-visa-usage estimate (item #1) was made worse, not better, by a same-day refinement.**
+  A same-day attempt to weight the raw 433,071 I-485 "(Family)" approval figure down using the
+  immediate-relative/preference ratio observed in this workbook's I-130 rows (~8.6%) produced
+  ~37,300 — which drove FB-to-EB spillover to ~188,700, nearly 2.4x the base 140,000 EB limit. The
+  ratio was invalid: I-130 petition approvals and I-485 adjustment approvals in the same fiscal year
+  are not the same population at the same pipeline stage (this year's approved preference I-130s
+  mostly won't become I-485-eligible for years, so this year's I-485 preference approvals trace back
+  to petitions approved years ago — there's no valid same-year ratio to borrow). **Fix:** reverted to
+  the raw, unweighted 433,071 figure. See `ExcelDataService.loadFamilyVisaUsage()`'s Javadoc for the
+  full account.
+
+With both fixed, the same test case (India, EB3, priority date 2019-12-16) now returns Filing
+January 2031 / Final Action October 2032 (annual supply ~9,807, essentially India's own 7% cap),
+and the total distributed across all countries and categories sums to exactly the 140,000 base
+limit (verified by summing every "FINAL SUPPLY" line in `calculateDynamicSupply`'s own debug output).
 
 ## Data gap still open (not fixable from this environment)
 
-- **Real family-preference visa usage** for `getFamilyVisasUsedPriorFiscalYear()` is now a real,
-  weighted estimate (see `ExcelDataService.loadFamilyVisaUsage()`), but the authoritative source —
+- **Real family-preference visa usage** for `getFamilyVisasUsedPriorFiscalYear()` is a real, if
+  imperfect, figure (see `ExcelDataService.loadFamilyVisaUsage()`), but the authoritative source —
   DOS's Visa Office Annual Report Table VI ("Immigrant Visas Issued at Foreign Service Posts") —
   remains unreachable: `travel.state.gov` returns HTTP 403 on every direct attempt, and every
   Wayback Machine snapshot since July 2024 captured a Cloudflare block page instead of the real

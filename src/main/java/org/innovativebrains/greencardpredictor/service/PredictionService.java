@@ -52,6 +52,15 @@ import java.util.*;
  *     estimate for that path -- the backlog data isn't split by filing
  *     location -- so this changes the explanation, not the underlying
  *     supply/demand model.
+ *  7. Only the five countries actually named on the bulletin's per-country
+ *     chart (India, China, Mexico, Philippines, Brazil) now get their own
+ *     7% allocation in calculateDynamicSupply(); every other Country enum
+ *     value previously also claimed a full 7% of its own, which meant the
+ *     "unused" remainder from ~95 near-zero-demand countries inflated the
+ *     horizontal-redistribution pool to several times the real global
+ *     total -- concretely, this could make a priority date years behind
+ *     the bulletin's own cutoff date look almost current. See
+ *     GAPS_AND_FIXES.md #9 for how this was found.
  *
  * NOT changed: the pre-existing consular-shutdown simulation (EB2 holdback
  * in the EB2->EB3 vertical spillover, EB2 weight boost in the horizontal
@@ -80,8 +89,16 @@ public class PredictionService {
     // Total Employment-Based (EB) annual limit is approx 140,000 (INA 201(d)).
     private static final double BASE_ANNUAL_EB_LIMIT = 140000;
 
-    // Per-country cap is 7% of the total EB limit (INA 202(a)(2)).
+    // Per-country cap is 7% of the total EB limit (INA 202(a)(2)) -- but that
+    // cap only applies to countries actually named on the Visa Bulletin's
+    // per-country chart (currently India, China, Mexico, Philippines, and
+    // Brazil; see PREDICTION_STRATEGY.md's "Apply 7% Country Cap" section).
+    // Every other country falls under "All Chargeability Areas Except Those
+    // Listed" (ROW) and draws ONLY from ROW's shared 65% allocation, not an
+    // individual 7% of their own.
     private static final double COUNTRY_CAP_PERCENTAGE = 0.07;
+    private static final Set<Country> INDIVIDUALLY_CAPPED_COUNTRIES = EnumSet.of(
+            Country.INDIA, Country.CHINA, Country.MEXICO, Country.PHILIPPINES, Country.BRAZIL);
 
     // Statutory floor for the worldwide family-sponsored limit (INA 201(c)(1)(B)).
     private static final double FAMILY_SPONSORED_FLOOR = 226000;
@@ -332,9 +349,32 @@ public class PredictionService {
         // EB4/EB5 residual share into its EB1 pool before the waterfall
         // runs (see class-level note #2: INA 203(b) sends unused EB4/
         // unreserved EB5 numbers to EB1 first, not the other way around).
+        //
+        // FIX (2026-09-26): this used to give EVERY Country enum value its
+        // own individual 7% allocation (only ROW was special-cased), instead
+        // of just the five countries actually named on the bulletin's
+        // per-country chart. With ~100 enum values each nominally claiming
+        // 7% of the total, the "unused" remainder from ~95 near-zero-demand
+        // countries got pooled and redistributed on top of ROW's already-
+        // large 65% share -- inflating the redistribution pool to several
+        // times the real global total, which could make a heavily-
+        // backlogged country's priority date look "current" when in
+        // reality it was years behind the bulletin's own cutoff date. Now
+        // only the five individually-capped countries get their own 7%;
+        // every other country gets zero base allocation of its own and can
+        // only receive supply via horizontal redistribution from the
+        // shared ROW/big-five pool, matching how "All Chargeability Areas
+        // Except Those Listed" actually works on the real Visa Bulletin.
         for (Country c : Country.values()) {
             Map<EbCategory, Double> catSupply = new HashMap<>();
-            double countryLimit = (c == Country.ROW) ? totalAnnualEbLimit * (1 - (5 * COUNTRY_CAP_PERCENTAGE)) : countryAnnualLimit;
+            double countryLimit;
+            if (c == Country.ROW) {
+                countryLimit = totalAnnualEbLimit * (1 - (INDIVIDUALLY_CAPPED_COUNTRIES.size() * COUNTRY_CAP_PERCENTAGE));
+            } else if (INDIVIDUALLY_CAPPED_COUNTRIES.contains(c)) {
+                countryLimit = countryAnnualLimit;
+            } else {
+                countryLimit = 0;
+            }
 
             for (EbCategory cat : EbCategory.values()) {
                 double allocation = countryLimit * CATEGORY_ALLOCATION.get(cat);
