@@ -1,0 +1,8 @@
+#!/bin/sh
+while read local_ref local_sha remote_ref remote_sha
+do
+    if [ "$remote_ref" = "refs/heads/main" ]; then
+        echo "❌ ERROR: Direct push to main is blocked locally. Please use a pull request!"
+        exit 1
+    fi
+done
