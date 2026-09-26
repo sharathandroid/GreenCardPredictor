@@ -220,17 +220,30 @@ public class PredictionService {
                     FAMILY_SPONSORED_FLOOR, FAMILY_SPONSORED_FLOOR, familyVisasUsed, fbToEbSpillover));
         }
 
-        double totalAnnualEbLimit = BASE_ANNUAL_EB_LIMIT + fbToEbSpillover;
-        double countryAnnualLimit = totalAnnualEbLimit * COUNTRY_CAP_PERCENTAGE;
-        steps.add(String.format(stepNum++ + ". Total annual EB limit = base %.0f + spillover %.0f = %.0f. "
-                + "Individual per-country cap (7%%, applies only to %s) = %.0f.",
-                BASE_ANNUAL_EB_LIMIT, fbToEbSpillover, totalAnnualEbLimit, INDIVIDUALLY_CAPPED_COUNTRIES, countryAnnualLimit));
+        // FIX (2026-09-26): per-country caps and the base category split are
+        // now computed from the fixed 140,000 statutory base ONLY -- INA
+        // 202(a)(2)'s 7% ceiling is a share of the actual visas made
+        // available for the year, but spillover isn't blended into that
+        // base pool anymore either; it enters separately, only at EB-1 (see
+        // calculateDynamicSupply's carry-in seed below), not spread evenly
+        // across EB-1/EB-2/EB-3 by inflating a combined total upfront. That
+        // was flagged as a real discrepancy against INA 201(d)/203(b) --
+        // spillover cascades down FROM EB-1 through the normal waterfall,
+        // it doesn't arrive pre-split into all three categories at once.
+        double countryAnnualLimit = BASE_ANNUAL_EB_LIMIT * COUNTRY_CAP_PERCENTAGE;
+        steps.add(String.format(stepNum++ + ". Base EB pool = %.0f (fixed statutory floor, INA 201(d)). "
+                + "Individual per-country cap (7%% of the fixed base, applies only to %s) = %.0f. "
+                + "FB-to-EB spillover (%.0f) is NOT blended into this base -- it enters separately, only at "
+                + "EB-1, per INA 203(b)'s waterfall.",
+                BASE_ANNUAL_EB_LIMIT, INDIVIDUALLY_CAPPED_COUNTRIES, countryAnnualLimit, fbToEbSpillover));
 
         Map<Country, Map<EbCategory, Double>> supplyMap =
-                calculateDynamicSupply(totalAnnualEbLimit, countryAnnualLimit, applicant.isConsularShutdown());
-        steps.add(stepNum++ + ". Ran the full supply model: base allocation, EB1->EB2->EB3 vertical waterfall "
-                + "(incl. EB4/EB5 residual folded into EB1), then horizontal redistribution of unused "
-                + "capacity to oversubscribed countries" + (applicant.isConsularShutdown() ? " (consular-shutdown mode: EB2 prioritized)." : "."));
+                calculateDynamicSupply(BASE_ANNUAL_EB_LIMIT, countryAnnualLimit, fbToEbSpillover, applicant.isConsularShutdown());
+        steps.add(stepNum++ + ". Ran the full supply model: base allocation (from the fixed base only), FB "
+                + "spillover injected at EB-1, EB1->EB2->EB3 waterfall with horizontal (cross-country, "
+                + "priority-date-ordered) redistribution running within each category before any leftover "
+                + "cascades to the next one down (incl. EB4/EB5 residual folded into EB1)"
+                + (applicant.isConsularShutdown() ? " (consular-shutdown mode: EB2 prioritized)." : "."));
 
         LocalDate applicantPD = applicant.getPriorityDate();
 
@@ -409,7 +422,7 @@ public class PredictionService {
         return month + " " + date.getYear();
     }
 
-    private Map<Country, Map<EbCategory, Double>> calculateDynamicSupply(double totalAnnualEbLimit, double countryAnnualLimit, boolean consularShutdown) {
+    private Map<Country, Map<EbCategory, Double>> calculateDynamicSupply(double baseAnnualEbLimit, double countryAnnualLimit, double fbToEbSpillover, boolean consularShutdown) {
         Map<Country, Map<EbCategory, Double>> supplyMap = new HashMap<>();
         Map<Country, Map<EbCategory, Long>> demandMap = new HashMap<>();
 
@@ -417,7 +430,8 @@ public class PredictionService {
         if (consularShutdown) {
             System.out.println("[CALCULATION] CONSULAR SHUTDOWN MODE ACTIVE (Simulating FY2020-2022 EB2 prioritization)");
         }
-        System.out.println("[CALCULATION] Total EB Annual Limit (including FB spillover): " + String.format("%.0f", totalAnnualEbLimit));
+        System.out.println("[CALCULATION] Base EB Annual Limit: " + String.format("%.0f", baseAnnualEbLimit)
+                + " (FB spillover " + String.format("%.0f", fbToEbSpillover) + " enters separately, only at EB-1)");
 
         // 1. Initialize Demand (Backlog). Restricted countries have zero
         // demand for allocation purposes since no visas can currently be
@@ -455,7 +469,7 @@ public class PredictionService {
             Map<EbCategory, Double> catSupply = new HashMap<>();
             double countryLimit;
             if (c == Country.ROW) {
-                countryLimit = totalAnnualEbLimit * (1 - (INDIVIDUALLY_CAPPED_COUNTRIES.size() * COUNTRY_CAP_PERCENTAGE));
+                countryLimit = baseAnnualEbLimit * (1 - (INDIVIDUALLY_CAPPED_COUNTRIES.size() * COUNTRY_CAP_PERCENTAGE));
             } else if (INDIVIDUALLY_CAPPED_COUNTRIES.contains(c)) {
                 countryLimit = countryAnnualLimit;
             } else {
@@ -495,7 +509,16 @@ public class PredictionService {
         // genuine leftover (pool bigger than total oversubscribed demand in
         // this category) cascade down to the next category.
         System.out.println("[CALCULATION] Processing category waterfall (horizontal-within-category, then vertical cascade)...");
-        double carryInFromPriorCategory = 0;
+        // FIX (2026-09-26): FB-to-EB spillover (INA 201(d)) enters "at the
+        // top of the Employment-Based hierarchy" -- i.e. as poolable EB-1
+        // capacity -- not blended into every category's base allocation
+        // upfront (which is what happened before, when it inflated
+        // baseAnnualEbLimit before the 28.6% splits ran). Seeding EB-1's
+        // carry-in with it means it's redistributed horizontally among
+        // oversubscribed EB-1 countries first, exactly like any other
+        // unused EB-1 capacity, and only genuine EB-1 leftover cascades to
+        // EB-2 -- matching the statute's actual entry point.
+        double carryInFromPriorCategory = fbToEbSpillover;
         for (EbCategory cat : EbCategory.values()) {
             double pooledUnused = carryInFromPriorCategory;
             for (Country c : Country.values()) {
@@ -512,35 +535,27 @@ public class PredictionService {
                 continue;
             }
 
-            // Distribution weight (kept from the original design, not
-            // something this pass was asked to change): countries are
-            // prioritized 70% by their pre-2015 backlog and 30% by total
-            // remaining demand, so the oldest queues get first claim on
-            // redistributed visas rather than splitting purely pro rata by
-            // current backlog size. In consular-shutdown mode, EB2 gets an
-            // extra 50% weight boost, on top of the holdback below, since it
-            // absorbs most of the era's spillover.
-            Map<Country, Long> oversubscribed = new HashMap<>();
+            // FIX (2026-09-26): redistribution used to split the pool
+            // across oversubscribed countries by a custom 70/30 weight
+            // (pre-2015 backlog / remaining demand). Per INA 202(a)(5),
+            // "otherwise unused" numbers are made available to oversubscribed
+            // countries strictly in priority-date order, without regard to
+            // country of birth -- not by a country-level weighted share. So
+            // this now builds ONE global queue of (country, priority-date
+            // year) buckets across every oversubscribed country, sorted
+            // oldest-year-first, and fills it in that order regardless of
+            // which country each bucket belongs to.
             Map<Country, Long> remainingDemandByCountry = new HashMap<>();
-            long totalWeight = 0;
             for (Country c : Country.values()) {
                 double supply = supplyMap.get(c).get(cat);
                 long demand = demandMap.get(c).get(cat);
                 long remaining = demand - (long) supply;
                 if (remaining > 0) {
-                    long oldBacklog = excelDataService.getOldestBacklog(c, cat, 2015);
-                    long weight = (long) (oldBacklog * 0.7 + remaining * 0.3);
-                    if (weight == 0) weight = 1;
-                    if (consularShutdown && cat == EbCategory.EB2) {
-                        weight = (long) (weight * 1.5);
-                    }
-                    oversubscribed.put(c, weight);
                     remainingDemandByCountry.put(c, remaining);
-                    totalWeight += weight;
                 }
             }
 
-            if (totalWeight <= 0) {
+            if (remainingDemandByCountry.isEmpty()) {
                 System.out.println(String.format("[CALCULATION] No oversubscribed demand for %s. Pool of %.2f falls through to the next category.", cat, pooledUnused));
                 carryInFromPriorCategory = pooledUnused;
                 continue;
@@ -549,62 +564,24 @@ public class PredictionService {
             long totalRemainingDemand = remainingDemandByCountry.values().stream().mapToLong(Long::longValue).sum();
             double visasDistributed = Math.min(pooledUnused, totalRemainingDemand);
 
-            // FIX (2026-09-26): a straight one-pass weight-proportional split
-            // (visasDistributed * shareOfWeight, added with no cap) could hand
-            // a country MORE redistributed visas than its own remaining
-            // demand -- weight is a 70/30 blend of old-backlog and remaining
-            // demand, not equal to remaining demand itself, so a country with
-            // a huge pre-2015 backlog but a now-small remaining gap could
-            // still claim a large share. That's not just wasteful (supply
-            // exceeding real demand for that country/category), it also made
-            // the model non-monotonic: a LARGER total EB limit could lower a
-            // heavily-oversubscribed country's effective supply after
-            // redistribution, because other countries' pre-cap over-shares
-            // shifted as the numbers moved -- this surfaced as a failing test
-            // once real backlog data (see DATA_SOURCES.md) replaced the
-            // stale, much-smaller figures that never triggered the edge case.
-            //
-            // Water-filling instead: give each still-needy country its
-            // weight-proportional share of what's LEFT each round, capped at
-            // that country's own remaining demand; anything a capped country
-            // couldn't use goes back into the pool and is re-split among the
-            // countries still under their cap, repeating until the pool is
-            // gone or nobody remaining can use more. This guarantees no
-            // country's final supply ever exceeds its own demand, and makes
-            // supply monotonically non-decreasing in totalAnnualEbLimit.
-            Map<Country, Long> remainingCapacity = new HashMap<>(remainingDemandByCountry);
-            Map<Country, Long> activeWeights = new HashMap<>(oversubscribed);
+            List<PriorityBucket> queue = buildPriorityQueue(cat, remainingDemandByCountry);
             Map<Country, Double> allocated = new HashMap<>();
             double poolLeft = visasDistributed;
-
-            for (int round = 0; round < 50 && poolLeft > 1e-6 && !activeWeights.isEmpty(); round++) {
-                long activeTotalWeight = activeWeights.values().stream().mapToLong(Long::longValue).sum();
-                if (activeTotalWeight <= 0) break;
-
-                double distributedThisRound = 0;
-                List<Country> filled = new ArrayList<>();
-                for (Map.Entry<Country, Long> entry : activeWeights.entrySet()) {
-                    Country c = entry.getKey();
-                    double share = poolLeft * ((double) entry.getValue() / activeTotalWeight);
-                    double cap = remainingCapacity.get(c);
-                    double give = Math.min(share, cap);
-                    allocated.merge(c, give, Double::sum);
-                    distributedThisRound += give;
-                    double newCap = cap - give;
-                    remainingCapacity.put(c, (long) newCap);
-                    if (newCap <= 0) filled.add(c);
-                }
-                poolLeft -= distributedThisRound;
-                activeWeights.keySet().removeAll(filled);
-                // If nobody hit their cap this round, every share was fully
-                // used and the pool is (about to be) exhausted -- no need to
-                // keep looping.
-                if (filled.isEmpty()) break;
+            for (PriorityBucket bucket : queue) {
+                if (poolLeft <= 1e-9) break;
+                double give = Math.min(poolLeft, bucket.count());
+                allocated.merge(bucket.country(), give, Double::sum);
+                poolLeft -= give;
             }
+            // Every bucket's count already sums to exactly that country's
+            // remaining demand (see buildPriorityQueue), so this can never
+            // hand a country more than it actually needs -- the invariant
+            // the old water-filling loop had to work to enforce falls out
+            // for free here.
 
             for (Map.Entry<Country, Double> entry : allocated.entrySet()) {
                 supplyMap.get(entry.getKey()).put(cat, supplyMap.get(entry.getKey()).get(cat) + entry.getValue());
-                System.out.println(String.format("[CALCULATION] Redistributing %.2f unused %s visas to %s", entry.getValue(), cat, entry.getKey()));
+                System.out.println(String.format("[CALCULATION] Redistributing %.2f unused %s visas to %s (priority-date order)", entry.getValue(), cat, entry.getKey()));
             }
 
             // Whatever of the pool couldn't be placed (every oversubscribed
@@ -614,22 +591,25 @@ public class PredictionService {
             double genuineLeftover = poolLeft;
 
             // Consular-shutdown mode (kept from the original design, not
-            // something this pass was asked to change, just re-homed to fit
-            // the new horizontal-then-vertical order): EB2 is mostly filed
+            // something this pass was asked to change, just re-homed twice
+            // now to fit first the horizontal-then-vertical reorder and now
+            // priority-date-ordered redistribution): EB2 is mostly filed
             // domestically (AOS), while EB3 skews toward consular processing
             // abroad, which is what a consular shutdown actually disrupts.
             // So in that mode, only a fifth of EB2's genuine leftover falls
             // through to EB3 -- the rest is held back and handed to this
-            // same round's oversubscribed EB2 countries as bonus supply
+            // category's oversubscribed countries as bonus supply
             // (deliberately beyond their own remaining demand, mirroring the
             // original design's intentional over-allocation for this one
-            // specific simulated scenario), rather than assuming a shutdown
-            // affects EB2 and EB3 equally.
-            if (consularShutdown && cat == EbCategory.EB2 && genuineLeftover > 0 && !oversubscribed.isEmpty()) {
+            // specific simulated scenario, now split by each country's share
+            // of total remaining demand instead of the removed weight
+            // formula), rather than assuming a shutdown affects EB2 and EB3
+            // equally.
+            if (consularShutdown && cat == EbCategory.EB2 && genuineLeftover > 0) {
                 double heldBack = genuineLeftover * 0.8;
                 genuineLeftover -= heldBack;
-                for (Map.Entry<Country, Long> entry : oversubscribed.entrySet()) {
-                    double bonus = heldBack * ((double) entry.getValue() / totalWeight);
+                for (Map.Entry<Country, Long> entry : remainingDemandByCountry.entrySet()) {
+                    double bonus = heldBack * ((double) entry.getValue() / totalRemainingDemand);
                     supplyMap.get(entry.getKey()).put(EbCategory.EB2, supplyMap.get(entry.getKey()).get(EbCategory.EB2) + bonus);
                 }
                 System.out.println(String.format("[CALCULATION] Consular Shutdown - Holding %.2f of EB2's leftover pool back for EB2 instead of passing it to EB3", heldBack));
@@ -646,5 +626,58 @@ public class PredictionService {
 
         System.out.println("[CALCULATION] Dynamic supply calculation complete.");
         return supplyMap;
+    }
+
+    /**
+     * One (country, priority-date year, count) unit in a category's global
+     * priority-date-ordered redistribution queue -- see buildPriorityQueue().
+     */
+    private record PriorityBucket(Country country, int year, long count) {
+    }
+
+    /**
+     * FIX (2026-09-26): builds each oversubscribed country's remaining
+     * demand for this category, broken down by priority-date year (I-485
+     * inventory + I-140 approvals), merged and sorted oldest-year-first
+     * across ALL oversubscribed countries -- so redistribution can fill
+     * strictly in priority-date order (INA 202(a)(5)) instead of by a
+     * country-level weighted share.
+     *
+     * Each country's own base allocation is assumed to have already cleared
+     * its OLDEST pending cases first (how visa numbers actually get used
+     * against a backlog), so this trims that many units off the front
+     * (oldest years) of that country's yearly breakdown before adding the
+     * rest to the queue -- the remaining buckets across all years for a
+     * country always sum to exactly `remainingDemandByCountry.get(country)`,
+     * which is what guarantees this queue can never hand a country more
+     * than its own real remaining demand.
+     */
+    private List<PriorityBucket> buildPriorityQueue(EbCategory cat, Map<Country, Long> remainingDemandByCountry) {
+        List<PriorityBucket> buckets = new ArrayList<>();
+        for (Map.Entry<Country, Long> entry : remainingDemandByCountry.entrySet()) {
+            Country c = entry.getKey();
+            long remaining = entry.getValue();
+
+            Map<Integer, Long> yearly = new TreeMap<>(excelDataService.getInventoryYearly(c, cat));
+            excelDataService.getI140Yearly(c, cat).forEach((year, count) -> yearly.merge(year, count, Long::sum));
+
+            long totalYearly = yearly.values().stream().mapToLong(Long::longValue).sum();
+            long alreadyCoveredByBase = Math.max(0, totalYearly - remaining);
+
+            for (Map.Entry<Integer, Long> yearEntry : yearly.entrySet()) { // TreeMap: ascending by year
+                long count = yearEntry.getValue();
+                if (alreadyCoveredByBase >= count) {
+                    alreadyCoveredByBase -= count;
+                    continue;
+                }
+                long remainingInYear = count - alreadyCoveredByBase;
+                alreadyCoveredByBase = 0;
+                if (remainingInYear > 0) {
+                    buckets.add(new PriorityBucket(c, yearEntry.getKey(), remainingInYear));
+                }
+            }
+        }
+        buckets.sort(Comparator.comparingInt(PriorityBucket::year).thenComparing(b -> b.country().name()));
+        return buckets;
     }
 }

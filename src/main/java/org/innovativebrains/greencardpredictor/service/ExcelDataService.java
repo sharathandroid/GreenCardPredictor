@@ -431,4 +431,16 @@ public class ExcelDataService {
         String key = country.name() + "_" + category.name();
         return inventoryYearlyMap.getOrDefault(key, new HashMap<>());
     }
+
+    /**
+     * FIX (2026-09-26): added so PredictionService can build a true
+     * priority-date-ordered redistribution queue (INA 202(a)(5): unused
+     * numbers go to oversubscribed-country applicants strictly in priority
+     * date order) instead of a country-level weighted approximation.
+     * Mirrors getInventoryYearly() but for I-140 approved-petition data.
+     */
+    public Map<Integer, Long> getI140Yearly(Country country, EbCategory category) {
+        String key = country.name() + "_" + category.name();
+        return i140YearlyMap.getOrDefault(key, new HashMap<>());
+    }
 }
