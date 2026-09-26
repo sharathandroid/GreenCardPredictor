@@ -44,12 +44,14 @@ from how many petitions are sitting in a queue.
 
 **Fix:** `ExcelDataService.getFamilyVisasUsedPriorFiscalYear()` (new method) and
 `PredictionService` now compare the family-sponsored limit against actual/estimated prior-FY
-usage. This app doesn't yet parse a workbook that reports actual family-preference issuances,
-so the new method is an honestly-labeled placeholder returning the statutory floor (226,000)
-— meaning spillover correctly defaults to 0 *for the right reason* (no measured shortfall) until
-you wire in real usage data, rather than always returning 0 *for the wrong reason* (comparing
-against the wrong number entirely). See "Data gaps to close next" below for the exact report to
-parse for the real figure.
+usage. **Update 2026-09-26:** this now returns a real parsed figure (433,071 — FY2025's domestic
+I-485 "(Family)" approvals, from `quarterly_all_forms_fy2025_q4_v1.xlsx`) rather than a flat
+placeholder. It's still not the fully authoritative number — it mixes uncapped immediate-relative
+approvals in with capped family-preference approvals (USCIS's public report doesn't split them),
+and it omits DOS's consular-issued family visas (Table VI), which `travel.state.gov` blocking
+(HTTP 403 from this environment, confirmed on retry) prevented fetching. Both gaps are documented
+on the method itself and in `DATA_SOURCES.md` #4. Falls back to the statutory floor (spillover = 0)
+if the source file/row can't be parsed, same fail-safe as the original placeholder.
 
 **Bonus, tied to "embassies closed":** the ongoing DOS worldwide immigrant-visa-interview pause
 (started ~Aug 25, 2026, for consular retraining) hits **family-based cases disproportionately**
@@ -139,18 +141,18 @@ hardcoding one month's numbers into Java source is the recurring failure mode he
 will be stale again in a few weeks. Same recommendation as #3: externalize to a config resource
 that's easy to refresh monthly, ideally scraped from `travel.state.gov` on a schedule.
 
-## 6. Source Excel files are stale (not fixed in code — see below)
+## 6. Source Excel files were stale — FIXED 2026-09-26
 
-`ExcelDataService` is pinned to `eb_inventory_october_2025 (1).xlsx`,
-`i140_rec_by_class_country_fy2025_q3.xlsx`, and `quarterly_all_forms_fy2025_q3.xlsx`. Newer
-editions exist (confirmed via web search, see `DATA_SOURCES.md` for exact filenames/URLs). This
-sandbox's outbound network access to `uscis.gov` was blocked both when this analysis was first
-done and again when re-checked before opening this PR, so the new files' bytes were never
-actually downloaded here. Given that, **the code in this PR intentionally still points at the old
-filenames** rather than repointing at names that don't exist in `src/main/resources/` — the
-loaders swallow their `IOException` and log-and-continue rather than failing the build, so
-pointing at a missing file would silently zero out every backlog figure instead of loudly
-breaking. See `DATA_SOURCES.md` for the manual steps once you've downloaded the newer workbooks.
+`ExcelDataService` was pinned to `eb_inventory_october_2025 (1).xlsx`,
+`i140_rec_by_class_country_fy2025_q3.xlsx`, and `quarterly_all_forms_fy2025_q3.xlsx`. The original
+pass here left these in place because the sandbox that drafted it couldn't reach `uscis.gov`. A
+later session confirmed this repo's actual working environment *can* reach `uscis.gov` (only
+`travel.state.gov` is blocked) and did the real swap: downloaded and byte-verified the current
+editions, fixed one hardcoded-column-index bug the newer I-140 file's extra year column exposed
+(see `ExcelDataService.loadI140Data()`), and caught one wrong filename guess from the original
+`DATA_SOURCES.md` draft before it could ship (a plausible-looking filename that turned out to be a
+differently-shaped report). Full details, exact filenames, and what's still approximate are in
+`DATA_SOURCES.md` #1–#4.
 
 ## 7. A latent string-matching bug in `Country.fromString`
 

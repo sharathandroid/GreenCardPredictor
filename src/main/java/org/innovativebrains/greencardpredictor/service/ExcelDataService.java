@@ -14,49 +14,60 @@ import java.util.HashMap;
 import java.util.Map;
 
 /**
- * NOTE ON DATA VINTAGE (updated 2026-09-25):
+ * NOTE ON DATA VINTAGE (updated 2026-09-26):
  * ------------------------------------------------------------------------
- * The three source workbooks below (Oct 2025 inventory, FY2025 Q3 I-140 and
- * I-130 data) are stale -- newer editions exist on uscis.gov (see
- * DATA_SOURCES.md for exact filenames/URLs: eb_inventory_february_2026.xlsx,
- * i140_fy2026_q2_v1.xlsx, quarterly_all_forms_fy2026_q3_v1.xlsx).
+ * The three source workbooks below were refreshed to the most recent editions
+ * confirmed available on uscis.gov as of 2026-09-26 (this environment's
+ * network access to uscis.gov works; travel.state.gov does not -- see the
+ * family-visa-usage note on getFamilyVisasUsedPriorFiscalYear() below):
+ *   - EB I-485 inventory: April 2026 (the newest monthly edition published;
+ *     USCIS had not yet posted May/June/July/August/September by the time of
+ *     this fix -- still ~5 months behind "today," just less than the ~11
+ *     months of staleness this replaced).
+ *   - I-140 receipts/approvals by class and country: FY2026 Q3.
+ *   - I-130/I-485 "quarterly all forms": FY2026 Q3 (current pending counts)
+ *     plus FY2025 Q4 (the last *completed* fiscal year, used for prior-FY
+ *     family-visa usage -- see below).
  *
- * IMPORTANT: this PR deliberately does NOT repoint these constants at those
- * newer filenames, because the actual .xlsx bytes for them are not in this
- * repo and this environment's outbound network access to uscis.gov is
- * blocked, so they couldn't be downloaded and committed here. Repointing
- * ClassPathResource at a filename that isn't actually in src/main/resources
- * would not fail loudly -- loadInventory()/loadI140Data()/loadI130Data()
- * each swallow the IOException and just log it -- so the app would silently
- * run with empty backlog data instead of failing the build. That's worse
- * than staying on stale-but-present data. Once you've downloaded the newer
- * files from the URLs in DATA_SOURCES.md and added them under
- * src/main/resources, update the three constants below to match and verify
- * each workbook's layout still matches what the loaders expect (also noted
- * in DATA_SOURCES.md).
+ * A prior pass guessed the I-140 replacement filename as "i140_fy2026_q2_v1
+ * .xlsx" without downloading it; that guess was wrong -- it's a genuinely
+ * different report ("Receipts by Beneficiary State/Country of Birth", one
+ * row per country, no multi-year TOTAL/Approved/Denied breakdown). The
+ * correct continuation of the old "by class and country" report is
+ * i140_rec_by_class_country_fy2026_q3_v1.xlsx, confirmed by fetching
+ * USCIS's reports-and-studies index page directly. Lesson: a plausible
+ * filename pattern is not a substitute for opening the file.
+ *
+ * Re-pointing these constants also surfaced a real bug: the new I-140 file's
+ * yearly columns run 2014-2026 (13 years, one more than 2014-2025), which
+ * shifted the "TOTAL" column from index 13 to 14. loadI140Data() no longer
+ * hardcodes that index -- it looks up the "TOTAL" header cell each time --
+ * specifically so a future year rollover doesn't silently misfile next
+ * year's partial total as the all-time total again.
  * ------------------------------------------------------------------------
  */
 @Service
 public class ExcelDataService {
 
-    // NOTE: still pointing at the existing (stale) files checked into
-    // src/main/resources -- see the class comment above for why these
-    // weren't repointed at the newer filenames in this pass.
-    private static final String INVENTORY_FILE = "eb_inventory_october_2025 (1).xlsx";
-    private static final String I140_FILE = "i140_rec_by_class_country_fy2025_q3.xlsx";
-    private static final String I130_FILE = "quarterly_all_forms_fy2025_q3.xlsx";
+    private static final String INVENTORY_FILE = "eb_inventory_april_2026.xlsx";
+    private static final String I140_FILE = "i140_rec_by_class_country_fy2026_q3_v1.xlsx";
+    private static final String I130_FILE = "quarterly_all_forms_fy2026_q3_v1.xlsx";
+    private static final String PRIOR_COMPLETED_FY_ALL_FORMS_FILE = "quarterly_all_forms_fy2025_q4_v1.xlsx";
 
     private Map<String, Long> inventoryMap = new HashMap<>(); // Key: Country_Category, Value: Count
     private Map<String, Map<Integer, Long>> inventoryYearlyMap = new HashMap<>(); // Key: Country_Category, Value: Map<Year, Count>
     private Map<String, Long> i140ApprovedMap = new HashMap<>(); // Key: Country_Category, Value: Count
     private Map<String, Map<Integer, Long>> i140YearlyMap = new HashMap<>(); // Key: Country_Category, Value: Map<Year, Count>
     private long i130PendingCount = 0;
+    private long familyI485ApprovedPriorFY = 0;
+    private boolean familyI485DataLoaded = false;
 
     @PostConstruct
     public void init() {
         loadInventory();
         loadI140Data();
         loadI130Data();
+        loadFamilyVisaUsage();
     }
 
     private void loadInventory() {
@@ -144,6 +155,21 @@ public class ExcelDataService {
 
                 Row headerRow = sheet.getRow(3); // Years are at row 3 (0-indexed)
 
+                // FIX (2026-09-26): the TOTAL column's index shifts whenever the
+                // report adds another year (it moved from 13 to 14 between the
+                // FY2025 Q3 and FY2026 Q3 editions). Look it up by header text
+                // instead of hardcoding a position that silently goes stale.
+                int totalCol = -1;
+                if (headerRow != null) {
+                    for (int c = 0; c < headerRow.getLastCellNum(); c++) {
+                        Cell headerCell = headerRow.getCell(c);
+                        if (headerCell != null && "TOTAL".equalsIgnoreCase(headerCell.toString().trim())) {
+                            totalCol = c;
+                            break;
+                        }
+                    }
+                }
+
                 for (int i = 0; i <= sheet.getLastRowNum(); i++) {
                     Row row = sheet.getRow(i);
                     if (row == null) continue;
@@ -169,8 +195,7 @@ public class ExcelDataService {
                                     try {
                                         long count = (long) Double.parseDouble(dataCell.toString());
 
-                                        // Column 13 is TOTAL
-                                        if (j == 13) {
+                                        if (j == totalCol) {
                                             i140ApprovedMap.put(key, count);
                                         } else if (headerRow != null && headerRow.getCell(j) != null) {
                                             String yearStr = headerRow.getCell(j).toString();
@@ -230,24 +255,72 @@ public class ExcelDataService {
     }
 
     /**
-     * FIX (2026-09-25): family-to-EB spillover must be driven by how many
-     * family-preference visas were actually ISSUED/USED in the prior fiscal
-     * year, not by the pending I-130 petition backlog (which is a multi-
-     * million-row demand queue, not a usage figure -- see
+     * FIX (2026-09-26): parses USCIS's FY2025 Q4 "All Forms" report -- the
+     * last *completed* fiscal year as of this writing -- for the domestic
+     * I-485 "(Family)" category row. For a Q4/year-end report, that row's
+     * "Fiscal Year - To Date" Approved column (index 9) is the full FY2025
+     * total, not a partial-year figure.
+     */
+    private void loadFamilyVisaUsage() {
+        try (InputStream is = new ClassPathResource(PRIOR_COMPLETED_FY_ALL_FORMS_FILE).getInputStream();
+             Workbook workbook = new XSSFWorkbook(is)) {
+            Sheet sheet = workbook.getSheetAt(0);
+            for (int i = 0; i <= sheet.getLastRowNum(); i++) {
+                Row row = sheet.getRow(i);
+                if (row == null) continue;
+
+                Cell formCell = row.getCell(0);
+                Cell titleCell = row.getCell(1);
+                if (formCell == null || titleCell == null) continue;
+                if (!"I-485".equals(formCell.toString().trim())) continue;
+                if (!titleCell.toString().toUpperCase().contains("FAMILY")) continue;
+
+                Cell fytdApprovedCell = row.getCell(9); // "Approved" under "Fiscal Year - To Date"
+                if (fytdApprovedCell != null) {
+                    try {
+                        familyI485ApprovedPriorFY = (long) Double.parseDouble(fytdApprovedCell.toString());
+                        familyI485DataLoaded = true;
+                    } catch (NumberFormatException e) { }
+                }
+                break;
+            }
+            System.out.println("Loaded prior-completed-FY family I-485 approvals: " + familyI485ApprovedPriorFY);
+        } catch (Exception e) {
+            System.err.println("Error loading prior-FY family visa usage: " + e.getMessage());
+        }
+    }
+
+    /**
+     * FIX (2026-09-25, data wired in 2026-09-26): family-to-EB spillover must
+     * be driven by how many family-preference visas were actually ISSUED/USED
+     * in the prior fiscal year, not by the pending I-130 petition backlog
+     * (which is a multi-million-row demand queue, not a usage figure -- see
      * GAPS_AND_FIXES.md item #1 for why the old formula always evaluated to
-     * zero). This app does not yet parse a workbook that reports actual
-     * family-preference visa issuances/adjustments, so this returns a
-     * documented placeholder pinned to the statutory floor rather than
-     * silently reusing the wrong number. Wire this up to DOS's "Immigrant
-     * Visas Issued" annual report (Table VI) or USCIS's family-based I-485
-     * approval counts once one of those workbooks is added as a resource.
+     * zero).
+     *
+     * This now returns FY2025's actual USCIS domestic I-485 "(Family)"
+     * approval count (433,071, loaded by loadFamilyVisaUsage() above) instead
+     * of a flat placeholder. Two known, documented limitations remain (see
+     * DATA_SOURCES.md #4 for the full explanation and the sources that would
+     * close them):
+     *
+     *  1. USCIS's public report doesn't split "(Family)" approvals between
+     *     uncapped immediate relatives and capped family-preference (F1-F4)
+     *     categories, so this figure OVERSTATES true preference-only usage --
+     *     which biases the resulting spillover estimate toward 0 (never
+     *     overpromises a wait time), not the other way around.
+     *  2. It covers domestic adjustments only. It excludes immigrant visas
+     *     issued abroad by consular posts (DOS Visa Office Annual Report
+     *     Table VI), which also count against the family limit and typically
+     *     account for a large share of usage. travel.state.gov returned
+     *     HTTP 403 on every attempt from this environment (confirmed
+     *     2026-09-26), so that half of the figure could not be incorporated.
+     *
+     * Falls back to the statutory floor (226,000, i.e. spillover = 0) if the
+     * source file or row can't be parsed, same fail-safe as before.
      */
     public long getFamilyVisasUsedPriorFiscalYear() {
-        // TODO: replace with real prior-FY family-preference issuance/adjustment
-        // count once a suitable source workbook is wired in (see DATA_SOURCES.md).
-        // Returning the statutory floor here means spillover defaults to 0
-        // rather than a fabricated positive number, until real data is supplied.
-        return 226_000L;
+        return familyI485DataLoaded ? familyI485ApprovedPriorFY : 226_000L;
     }
 
     public long getInventoryCount(Country country, EbCategory category) {
