@@ -79,11 +79,55 @@ specifically at **EB-1**, not spread across all three categories.
 ```mermaid
 flowchart LR
     A["Real family-preference visas<br/>issued last FY<br/><i>(DOS Table VI, consular)</i>"] --> B{"usage < 226,000?"}
-    B -- No --> C["Spillover = 0"]
-    B -- Yes --> D["Spillover =<br/>226,000 − usage"]
-    C --> E["EB-1's redistribution<br/>pool for this run"]
-    D --> E
+    B -- No --> C["Baseline spillover = 0"]
+    B -- Yes --> D["Baseline spillover =<br/>226,000 − usage"]
+    C --> Adj["+ restriction-adjusted<br/>spillover (below)"]
+    D --> Adj
+    Adj --> E["EB-1's redistribution<br/>pool for this run"]
 ```
+
+**But that baseline number is FY2024** — a year before Presidential Proclamation 10998 (the
+39-country travel ban) even existed. It can't reflect what happens to the family system *now* that
+those countries get zero family visas. A tempting shortcut — just subtract what those countries used
+to get, and hand the difference straight to EB — turns out to be wrong: family-preference visas have
+their *own* per-country caps and internal redistribution, same as employment-based. Unused numbers
+don't leave the family system until they've had nowhere else to go *within* it.
+
+**So this app models that internal redistribution for real** (`FamilyPreferenceSpilloverService`),
+using DOS Table VI's category-level breakdown (F1, F2A, F2B, F3, F4) per INA §202(a)(5)'s two-level
+rule:
+
+```mermaid
+flowchart TB
+    classDef pool fill:#fff7ed,stroke:#c2410c,stroke-width:1px,color:#7c2d12
+    classDef ok fill:#ecfdf5,stroke:#059669,stroke-width:1px,color:#064e3b
+
+    R["Restricted countries' FY2024<br/>family-preference usage<br/>(now freed, per Table VI)"]:::pool
+
+    subgraph L1["Level 1 — Horizontal (within category)"]
+        direction TB
+        H["Mexico / Philippines / India / China:<br/>headroom under ONE COMBINED<br/>15,820 (7%) ceiling —<br/>not 5 separate category sub-caps<br/><i>(F2A's 75% is exempt entirely,<br/>INA §202(a)(4)(A))</i>"]
+    end
+
+    subgraph L2["Level 2 — Vertical cascade (if still unused)"]
+        direction TB
+        C1["Unused F1 → F3"]
+        C2["Unused F2A / F2B → F4"]
+        C3["Unused F3 → F4"]
+    end
+
+    R --> L1
+    L1 -->|"absorbed, capped at headroom"| Done["Absorbed within FB —<br/>never reaches EB"]:::ok
+    L1 -->|"still unused"| L2
+    L2 -->|"genuinely unabsorbable"| Spill["Real additional<br/>FB-to-EB spillover"]
+```
+
+**The real, code-computed result:** the four named countries had **24,222** of combined headroom in
+FY2024 — more than the **20,935** restricted countries would have used. Everything gets absorbed at
+Level 1; nothing reaches Level 2 or EB. **Genuine additional spillover from the restriction = 0** —
+this runs for real on every prediction (see the `[FB-SPILLOVER]` log line), not a one-off
+calculation; it'll move automatically if the underlying data ever changes. Full methodology and every
+documented simplification: [`GAPS_AND_FIXES.md` #15](GAPS_AND_FIXES.md).
 
 ### Mechanism 2 — Per-Country Caps (INA §202(a)(2))
 
@@ -207,14 +251,15 @@ Every prediction includes a `reasoningSteps` array — the calculation's own tra
   "formattedFinalActionWait": "April 2032",
   "reasoningSteps": [
     "1. Checked restriction status for INDIA: not restricted.",
-    "2. FB-to-EB spillover (INA 201(c)/(d)): family-preference visa usage (DOS Table VI real figure) = 205762. Statutory floor = 226000. Spillover = max(0, floor - usage) = max(0, 226000 - 205762) = 20238.",
-    "3. Base EB pool = 140000 (fixed statutory floor, INA 201(d)). Individual per-country cap (7% of the fixed base, applies only to [INDIA, CHINA, PHILIPPINES, MEXICO, BRAZIL]) = 9800. ...",
-    "4. Ran the full supply model: base allocation (from the fixed base only), FB spillover injected at EB-1, EB1->EB2->EB3 waterfall with horizontal (cross-country, priority-date-ordered) redistribution ...",
-    "5. INDIA EB3 resulting annual supply (after redistribution): ~10692.",
-    "6. September 2026 bulletin Filing Cut-off for INDIA EB3: 2015-01-15.",
-    "7. Backlog (I-485 inventory + I-140 approvals) between the Filing Cut-off and priority date 2019-12-16: 43268 cases ahead of you.",
-    "8. September 2026 bulletin Final Action Cut-off for INDIA EB3: 2014-01-01.",
-    "9. Filing wait = 43268 / 10692 * 12 = 48 months; Final Action wait = ...",
+    "2. FB-to-EB spillover (INA 201(c)/(d)): family-preference visa usage (DOS Table VI real figure) = 205762. Statutory floor = 226000. Baseline spillover = max(0, floor - usage) = max(0, 226000 - 205762) = 20238.",
+    "3. Restriction-adjusted FB-to-EB spillover: modeled how much of the family-preference capacity currently-restricted countries would normally use (per Table VI) genuinely can't be absorbed by other backlogged countries after INA 202(a)(5)'s two-level redistribution (within-category, then F1->F3/F2A+F2B->F4/F3->F4 cascade) = 0. Total spillover = baseline 20238 + restriction-adjusted 0 = 20238.",
+    "4. Base EB pool = 140000 (fixed statutory floor, INA 201(d)). Individual per-country cap (7% of the fixed base, applies only to [INDIA, CHINA, PHILIPPINES, MEXICO, BRAZIL]) = 9800. ...",
+    "5. Ran the full supply model: base allocation (from the fixed base only), FB spillover injected at EB-1, EB1->EB2->EB3 waterfall with horizontal (cross-country, priority-date-ordered) redistribution ...",
+    "6. INDIA EB3 resulting annual supply (after redistribution): ~10692.",
+    "7. September 2026 bulletin Filing Cut-off for INDIA EB3: 2015-01-15.",
+    "8. Backlog (I-485 inventory + I-140 approvals) between the Filing Cut-off and priority date 2019-12-16: 43268 cases ahead of you.",
+    "9. September 2026 bulletin Final Action Cut-off for INDIA EB3: 2014-01-01.",
+    "10. Filing wait = 43268 / 10692 * 12 = 48 months; Final Action wait = ...",
     "Conclusion: Filing September 2030, Final Action April 2032."
   ]
 }
@@ -248,7 +293,8 @@ All authenticated with HTTP Basic (stateless — no CSRF, no session cookie; see
 | EB backlog (I-140 approved) | USCIS I-140 receipts/approvals by class & country | FY2026 Q3 |
 | Visa Bulletin cutoffs | `travel.state.gov` Visa Bulletin | September 2026 |
 | Restricted-country list | Presidential Proclamation 10998 | As of 2026-09-25 |
-| Family-preference visa usage | **DOS Table VI**, Report of the Visa Office (real, consular-issued) | FY2024 |
+| Family-preference visa usage (aggregate) | **DOS Table VI**, Report of the Visa Office (real, consular-issued) | FY2024 |
+| Family-preference visa usage (per category, per country) | **DOS Table VI Part I**, same report | FY2024 |
 
 Full provenance, exact filenames, and every documented gap: [`DATA_SOURCES.md`](DATA_SOURCES.md).
 
@@ -261,6 +307,10 @@ Full provenance, exact filenames, and every documented gap: [`DATA_SOURCES.md`](
 - This app **cannot forecast future Visa Bulletin cutoff dates** — DOS's month-to-month decisions
   involve deliberate caution margins and internal projections this model doesn't attempt to
   replicate.
+- The FB-side redistribution model (Mechanism 1) only individually tracks Mexico, Philippines,
+  India, and China as absorbers — Rest-of-World's own absorption capacity isn't modeled, and demand
+  for the four named countries is assumed to always fill their combined ceiling rather than derived
+  from data this app doesn't have.
 - No individual case-level nuance (RFEs, consular post capacity, processing delays).
 
 Full history of every bug found and fixed this year, with root causes and verification: see
@@ -274,7 +324,8 @@ src/main/java/org/innovativebrains/greencardpredictor/
 ├── controller/          REST endpoints
 ├── model/               Applicant, Country, EbCategory, PredictionResult
 └── service/
-    ├── ExcelDataService.java     Parses USCIS backlog workbooks + DOS Table VI data
-    ├── VisaBulletinService.java  Current bulletin cutoff dates
-    └── PredictionService.java    The algorithm described above
+    ├── ExcelDataService.java              Parses USCIS backlog workbooks + DOS Table VI aggregate
+    ├── FamilyPreferenceSpilloverService.java  Models FB-internal redistribution (Mechanism 1's second half)
+    ├── VisaBulletinService.java           Current bulletin cutoff dates
+    └── PredictionService.java             The algorithm described above
 ```
