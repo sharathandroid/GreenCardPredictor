@@ -121,6 +121,16 @@ public class PredictionService {
         Country country = applicant.getCountry();
         EbCategory category = applicant.getCategory();
 
+        // FIX (2026-09-26): every branch below now builds a step-by-step
+        // trace (PredictionResult.reasoningSteps) alongside the existing
+        // single-paragraph `explanation`, so a caller can see exactly which
+        // inputs and intermediate numbers drove the result instead of
+        // having to reverse-engineer one sentence. Requested after a user
+        // pointed out the app was giving "Unauthorized" with no visibility
+        // into what was actually computed underneath it.
+        List<String> steps = new ArrayList<>();
+        int stepNum = 1;
+
         // Handle countries currently subject to Presidential Proclamation
         // 10998's travel ban (full, partial, or immigrant-visa-only
         // suspension -- see Country.java for the current, dated list and
@@ -128,6 +138,8 @@ public class PredictionService {
         // change again; this area of law has changed multiple times within
         // 2026 alone.
         if (isRestricted(country)) {
+            steps.add(stepNum++ + ". Checked restriction status for " + country
+                    + ": RESTRICTED under Presidential Proclamation 10998 (as of " + DATA_AS_OF + ").");
             // FIX (2026-09-26): Proclamation 10998's suspension is strongest
             // for consular issuance abroad; a June 2026 district court ruling
             // allowed some domestic adjustment-of-status (I-485) processing
@@ -137,8 +149,14 @@ public class PredictionService {
             // explanation that reflects that possibility instead of a flat,
             // possibly-inaccurate "blocked" statement.
             if (applicant.isFilingDomestically()) {
+                steps.add(stepNum++ + ". Applicant indicated domestic filing: a June 2026 district court "
+                        + "ruling allows some domestic AOS processing to continue despite the ban, so this "
+                        + "is not treated as a hard block -- but no backlog data exists split by filing "
+                        + "location, so no numeric wait can be computed.");
+                steps.add("Conclusion: restricted, domestic filing may be legally possible but not quantifiable with current data.");
                 return PredictionResult.builder()
                         .restricted(true)
+                        .reasoningSteps(steps)
                         .explanation(String.format(
                             "As of %s, immigrant-visa issuance for %s is suspended under Presidential " +
                             "Proclamation 10998 (eff. Jan 1, 2026), which is strongest for consular " +
@@ -155,8 +173,11 @@ public class PredictionService {
                         .filingWaitMonths(999)
                         .build();
             }
+            steps.add(stepNum++ + ". No domestic-filing override was set: treated as fully blocked while the ban is in effect.");
+            steps.add("Conclusion: restricted, no wait-time prediction is meaningful.");
             return PredictionResult.builder()
                     .restricted(true)
+                    .reasoningSteps(steps)
                     .explanation(String.format(
                         "As of %s, immigrant-visa issuance for %s is suspended under Presidential " +
                         "Proclamation 10998 (eff. Jan 1, 2026). This status is litigation-sensitive and " +
@@ -169,6 +190,7 @@ public class PredictionService {
                     .filingWaitMonths(999)
                     .build();
         }
+        steps.add(stepNum++ + ". Checked restriction status for " + country + ": not restricted.");
 
         // FB-to-EB spillover (INA 201(c)/(d)): unused family-sponsored
         // numbers from the prior fiscal year become available to the
@@ -179,23 +201,36 @@ public class PredictionService {
         double fbToEbSpillover;
         if (applicant.getManualFbSpillover() != null) {
             fbToEbSpillover = applicant.getManualFbSpillover();
+            steps.add(stepNum++ + ". FB-to-EB spillover: manual override supplied = " + fbToEbSpillover + ".");
         } else {
-            double familyVisasUsed = excelDataService.getFamilyVisasUsedPriorFiscalYear();
+            double rawFamilyVisasUsed = excelDataService.getFamilyVisasUsedPriorFiscalYear();
             // The ongoing worldwide consular-interview pause (DOS, ~Aug 25,
             // 2026 onward; primarily affects family-based cases -- see
             // GAPS_AND_FIXES.md) further suppresses family visa usage. A
             // caller can estimate how much of the fiscal year it will have
             // suppressed via familyVisaPauseSeverity (0 = no effect).
             double severity = Math.max(0.0, Math.min(1.0, applicant.getFamilyVisaPauseSeverity()));
-            familyVisasUsed = familyVisasUsed * (1.0 - severity);
+            double familyVisasUsed = rawFamilyVisasUsed * (1.0 - severity);
             fbToEbSpillover = Math.max(0, FAMILY_SPONSORED_FLOOR - familyVisasUsed);
+            steps.add(String.format(stepNum++ + ". FB-to-EB spillover (INA 201(c)/(d)): family-preference "
+                    + "visa usage (DOS Table VI real figure) = %.0f%s. Statutory floor = %.0f. Spillover = "
+                    + "max(0, floor - usage) = max(0, %.0f - %.0f) = %.0f.",
+                    rawFamilyVisasUsed,
+                    severity > 0 ? String.format(", reduced %.0f%% for estimated consular-pause severity -> %.0f", severity * 100, familyVisasUsed) : "",
+                    FAMILY_SPONSORED_FLOOR, FAMILY_SPONSORED_FLOOR, familyVisasUsed, fbToEbSpillover));
         }
 
         double totalAnnualEbLimit = BASE_ANNUAL_EB_LIMIT + fbToEbSpillover;
         double countryAnnualLimit = totalAnnualEbLimit * COUNTRY_CAP_PERCENTAGE;
+        steps.add(String.format(stepNum++ + ". Total annual EB limit = base %.0f + spillover %.0f = %.0f. "
+                + "Individual per-country cap (7%%, applies only to %s) = %.0f.",
+                BASE_ANNUAL_EB_LIMIT, fbToEbSpillover, totalAnnualEbLimit, INDIVIDUALLY_CAPPED_COUNTRIES, countryAnnualLimit));
 
         Map<Country, Map<EbCategory, Double>> supplyMap =
                 calculateDynamicSupply(totalAnnualEbLimit, countryAnnualLimit, applicant.isConsularShutdown());
+        steps.add(stepNum++ + ". Ran the full supply model: base allocation, EB1->EB2->EB3 vertical waterfall "
+                + "(incl. EB4/EB5 residual folded into EB1), then horizontal redistribution of unused "
+                + "capacity to oversubscribed countries" + (applicant.isConsularShutdown() ? " (consular-shutdown mode: EB2 prioritized)." : "."));
 
         LocalDate applicantPD = applicant.getPriorityDate();
 
@@ -216,6 +251,9 @@ public class PredictionService {
             WaitEstimate spouseEstimate = estimateWait(spouseCountry, category, applicantPD, supplyMap);
             boolean spouseIsBetter = !spouseEstimate.unauthorized()
                     && (estimate.unauthorized() || spouseEstimate.finalWaitMonths() < estimate.finalWaitMonths());
+            steps.add(stepNum++ + ". Cross-chargeability (INA 202(b)) check: compared own country (" + country
+                    + ") vs. spouse's country of birth (" + spouseCountry + ") -> "
+                    + (spouseIsBetter ? "elected " + spouseCountry + " (more favorable)." : "kept " + country + " (spouse's country was not more favorable)."));
             if (spouseIsBetter) {
                 chargeabilityCountry = spouseCountry;
                 estimate = spouseEstimate;
@@ -224,6 +262,12 @@ public class PredictionService {
                     "(%s) instead of %s -- yields a more favorable outcome.]", spouseCountry, country);
             }
         }
+        steps.add(stepNum++ + ". " + chargeabilityCountry + " " + category + " resulting annual supply "
+                + "(after redistribution): ~" + String.format("%.0f", supplyMap.get(chargeabilityCountry).get(category)) + ".");
+        steps.add(stepNum++ + ". " + visaBulletinService.getBulletinMonth() + " bulletin Filing Cut-off for "
+                + chargeabilityCountry + " " + category + ": " + estimate.filingCutOff() + ".");
+        steps.add(stepNum++ + ". Backlog (I-485 inventory + I-140 approvals) between the Filing Cut-off and "
+                + "priority date " + applicantPD + ": " + estimate.volumeAheadOfFiling() + " cases ahead of you.");
 
         // 1. Anchor to Official Visa Bulletin Dates
         String shutdownNote = applicant.isConsularShutdown() ? " [CONSULAR SHUTDOWN MODE ACTIVE: EB2 PRIORITIZED]" : "";
@@ -236,9 +280,17 @@ public class PredictionService {
             long filingWaitMonths = estimate.filingWaitMonths();
             LocalDate filingDate = LocalDate.now().plusMonths(filingWaitMonths);
             String formattedFilingWait = formatToMonthYear(filingDate);
+            steps.add(stepNum++ + ". Filing wait = " + estimate.volumeAheadOfFiling() + " / "
+                    + String.format("%.0f", supplyMap.get(chargeabilityCountry).get(category)) + " * 12 = "
+                    + filingWaitMonths + " months -> Filing available: " + formattedFilingWait + ".");
+            steps.add(stepNum++ + ". Final Action Cut-off for " + chargeabilityCountry + " " + category
+                    + " is marked UNAUTHORIZED on the " + visaBulletinService.getBulletinMonth() + " bulletin "
+                    + "(annual ceiling already reached) -- no green-card approval possible until next fiscal "
+                    + "year. This does NOT affect Filing eligibility, which is a separate chart (see step above).");
 
             return PredictionResult.builder()
                     .restricted(false)
+                    .reasoningSteps(steps)
                     .filingDate(filingDate)
                     .filingWaitMonths(filingWaitMonths)
                     .formattedFilingWait(formattedFilingWait)
@@ -259,6 +311,13 @@ public class PredictionService {
 
         long filingWaitMonths = estimate.filingWaitMonths();
         long finalWaitMonths = estimate.finalWaitMonths();
+        steps.add(stepNum++ + ". " + visaBulletinService.getBulletinMonth() + " bulletin Final Action Cut-off for "
+                + chargeabilityCountry + " " + category + ": " + estimate.finalActionCutOff() + ".");
+        double annualSupplyForSteps = supplyMap.get(chargeabilityCountry).get(category);
+        steps.add(stepNum++ + ". Filing wait = " + estimate.volumeAheadOfFiling() + " / "
+                + String.format("%.0f", annualSupplyForSteps) + " * 12 = " + filingWaitMonths + " months; "
+                + "Final Action wait = " + String.format("%.0f", annualSupplyForSteps) + "-scaled volume ahead of "
+                + "Final Action Cut-off -> " + finalWaitMonths + " months.");
 
         LocalDate filingDate = LocalDate.now().plusMonths(filingWaitMonths);
         LocalDate finalActionDate = LocalDate.now().plusMonths(finalWaitMonths);
@@ -266,10 +325,13 @@ public class PredictionService {
         if (filingDate.isAfter(finalActionDate)) {
             filingDate = finalActionDate;
             filingWaitMonths = finalWaitMonths;
+            steps.add(stepNum++ + ". Filing date computed later than Final Action date (can't file after you'd "
+                    + "already be approved) -- capped Filing to match Final Action.");
         }
 
         String formattedFinalActionWait = formatToMonthYear(finalActionDate);
         String formattedFilingWait = formatToMonthYear(filingDate);
+        steps.add("Conclusion: Filing " + formattedFilingWait + ", Final Action " + formattedFinalActionWait + ".");
 
         return PredictionResult.builder()
                 .finalActionDate(finalActionDate)
@@ -278,6 +340,7 @@ public class PredictionService {
                 .finalActionWaitMonths(finalWaitMonths)
                 .formattedFilingWait(formattedFilingWait)
                 .formattedFinalActionWait(formattedFinalActionWait)
+                .reasoningSteps(steps)
                 .explanation(String.format(
                     "Bulletin-Anchored Prediction (%s bulletin, chargeable to %s). Filing Cut-off: %s, Final Action Cut-off: %s. " +
                     "Annual supply: ~%.0f. Inventory + I-140 Ahead of Filing PD: %d. Priority Date: %s.%s%s",
