@@ -278,7 +278,50 @@ this whole investigation — now returns Filing March 2029 / Final Action Februa
 supply ~17,121), a real, defensible multi-year wait consistent with a priority date years behind
 the bulletin's cutoff, using genuinely current statutory mechanics and the best real data available.
 
-## 11. Three more mechanics discrepancies vs. the actual INA text — FIXED 2026-09-26
+## 12. Filing was incorrectly blocked by Final Action's "Unauthorized" status — FIXED 2026-09-26
+
+User-reported: India, EB2, priority date 2011-01-01 (four years senior to India EB2's real
+September 2026 Filing cutoff of 2015-01-15) was returning `"N/A (Unauthorized this FY)"` for
+**both** Filing and Final Action. Filing (Chart B) and Final Action (Chart A) are separate charts
+on the real Visa Bulletin — DOS can mark Final Action Unauthorized (the annual ceiling is hit, no
+more green cards can be approved this FY) while still publishing a real Filing cutoff, specifically
+so people can submit their I-485/DS-260 and get interim benefits (EAD/AP) while waiting for final
+numbers. That's exactly India EB2's real state on the current bulletin.
+
+`estimateWait()` previously short-circuited to a sentinel the instant
+`isFinalActionUnauthorized()` was true, before computing filing at all. **Fix:** filing is always
+computed from its own cutoff/volume/supply, independent of final action's authorization status;
+only final action collapses to "Unauthorized" when that's actually true. Verified against the
+reported case: a 2011 priority date now correctly returns Filing "current" (already past the 2015
+cutoff) with Final Action still Unauthorized.
+
+## 13. EB-1 and EB-2 could never receive cross-country redistribution — FIXED 2026-09-26
+
+Found by checking why India EB2's Filing wait computed to 743 months (62 years) — far worse than
+EB3's, despite EB2 being comparably backlogged in reality. The server log showed zero
+"Redistributing" lines had ever printed for EB1 or EB2, for any country, in any run — only EB3 ever
+received cross-country redistribution.
+
+Root cause: `calculateDynamicSupply` ran the full EB1→EB2→EB3 vertical waterfall for every country
+FIRST, then horizontal (cross-country) redistribution second, per category. By the time horizontal
+redistribution looked at EB1, every country's EB1 surplus had already been pushed down into EB2 by
+the vertical step (that's what the vertical step does). Same for EB2 → EB3. So EB1's and EB2's
+cross-country pool was mathematically guaranteed to be exactly zero, every time — 100% of unused
+capacity worldwide got funneled into EB3 by construction, regardless of how oversubscribed a
+country's EB1 or EB2 actually was. Real INA 203(b) / 9 FAM 502.1-1(e) mechanics run the other way:
+unused numbers in a category are first offered to other oversubscribed countries in that *same*
+category, and only what's still unused after that falls through to the next category down.
+
+**Fix:** restructured the two separate passes (vertical loop, then horizontal loop) into a single
+per-category loop in EB1→EB2→EB3 order — each category's own unused supply plus whatever fell
+through from the previous category is redistributed horizontally first, and only the genuine
+leftover cascades to the next category. (This is also the structural change that made item #14's
+priority-date-ordered redistribution straightforward to build on top of.) India/EB2/2019-12-16's
+Filing wait improved from 743 to ~520 months at the time — still extreme, but now reflecting
+India's own genuinely large EB1 demand absorbing much of the shared pool first, not an algorithmic
+bug that made EB1/EB2 redistribution structurally impossible.
+
+## 14. Three more mechanics discrepancies vs. the actual INA text — FIXED 2026-09-26
 
 Found by checking a detailed INA §201/202/203 spec the project owner supplied against the
 running code. All three fixed:
