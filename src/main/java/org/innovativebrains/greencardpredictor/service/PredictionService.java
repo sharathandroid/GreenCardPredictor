@@ -472,54 +472,32 @@ public class PredictionService {
             supplyMap.put(c, catSupply);
         }
 
-        // 3. Vertical Spillover (EB1 -> EB2 -> EB3) - Country by Country.
-        // In consular-shutdown mode we simulate 2020-2022 conditions where
-        // AOS-heavy EB2 absorbed most of the spillover ahead of EB3.
-        for (Country c : Country.values()) {
-            double eb1Supply = supplyMap.get(c).get(EbCategory.EB1);
-            long eb1Demand = demandMap.get(c).get(EbCategory.EB1);
-            double eb1Unused = Math.max(0, eb1Supply - eb1Demand);
-            if (eb1Unused > 0) {
-                supplyMap.get(c).put(EbCategory.EB1, (double) Math.min(eb1Supply, eb1Demand));
-                double eb2Supply = supplyMap.get(c).get(EbCategory.EB2) + eb1Unused;
-                supplyMap.get(c).put(EbCategory.EB2, eb2Supply);
-                System.out.println(String.format("[CALCULATION] %s: Vertical Spillover EB1 -> EB2: %.2f", c, eb1Unused));
-            }
-
-            double eb2Supply = supplyMap.get(c).get(EbCategory.EB2);
-            long eb2Demand = demandMap.get(c).get(EbCategory.EB2);
-            double eb2Unused = Math.max(0, eb2Supply - eb2Demand);
-            if (eb2Unused > 0) {
-                // Consular-shutdown mode (kept from the original design, not
-                // something this pass was asked to change): EB2 is mostly
-                // filed domestically (AOS), while EB3 skews toward consular
-                // processing abroad, which is what a consular shutdown
-                // actually disrupts. So in that mode we hold back most of
-                // EB2's surplus in EB2 instead of letting it all spill to
-                // EB3, rather than assuming a shutdown affects both equally.
-                double passedToEb3 = eb2Unused;
-                if (consularShutdown && !isRestricted(c)) {
-                    double heldInEb2 = eb2Unused * 0.8;
-                    passedToEb3 = eb2Unused - heldInEb2;
-                    System.out.println(String.format("[CALCULATION] %s: Consular Shutdown - Holding %.2f surplus visas in EB2", c, heldInEb2));
-                    supplyMap.get(c).put(EbCategory.EB2, eb2Demand + heldInEb2);
-                } else {
-                    supplyMap.get(c).put(EbCategory.EB2, (double) Math.min(eb2Supply, eb2Demand));
-                }
-                double eb3Supply = supplyMap.get(c).get(EbCategory.EB3) + passedToEb3;
-                supplyMap.get(c).put(EbCategory.EB3, eb3Supply);
-                System.out.println(String.format("[CALCULATION] %s: Vertical Spillover EB2 -> EB3: %.2f", c, passedToEb3));
-            }
-        }
-
-        // 4. Horizontal/Global Redistribution: numbers left unused in any
-        // category after the vertical waterfall (typically from
-        // low-demand or restricted countries) are pooled and redistributed
-        // to oversubscribed countries in that same category, proportional
-        // to each oversubscribed country's remaining backlog.
-        System.out.println("[CALCULATION] Processing Horizontal/Global Redistribution...");
+        // 3+4. FIX (2026-09-26): per-category horizontal (cross-country)
+        // redistribution now runs BEFORE that category's surplus cascades
+        // vertically to the next category, not after. The old order ran the
+        // full EB1->EB2->EB3 vertical waterfall for every country FIRST,
+        // which meant every country's EB1 and EB2 surplus had ALREADY been
+        // pushed down to EB2/EB3 by the time horizontal redistribution ever
+        // looked at EB1 or EB2 -- so EB1's and EB2's cross-country pool was
+        // mathematically guaranteed to be exactly zero, every single time
+        // (verified: zero "Redistributing ... EB1/EB2" log lines ever
+        // printed, for any country, in any run). Real INA 203(b)/9 FAM
+        // 502.1-1(e) mechanics run the other way: unused numbers in a
+        // category are first offered to OTHER oversubscribed countries in
+        // that SAME category, and only what's still unused after that falls
+        // through to the next category down. That's what this does now:
+        // for each category in order, pool this category's own unused
+        // supply (from countries whose demand doesn't use their base
+        // allocation) PLUS whatever fell through from the previous
+        // category, redistribute it horizontally among this category's
+        // oversubscribed countries (capped at each one's own remaining
+        // demand -- see the water-filling note below), and let only the
+        // genuine leftover (pool bigger than total oversubscribed demand in
+        // this category) cascade down to the next category.
+        System.out.println("[CALCULATION] Processing category waterfall (horizontal-within-category, then vertical cascade)...");
+        double carryInFromPriorCategory = 0;
         for (EbCategory cat : EbCategory.values()) {
-            double pooledUnused = 0;
+            double pooledUnused = carryInFromPriorCategory;
             for (Country c : Country.values()) {
                 double supply = supplyMap.get(c).get(cat);
                 long demand = demandMap.get(c).get(cat);
@@ -529,7 +507,10 @@ public class PredictionService {
                 }
             }
 
-            if (pooledUnused <= 0) continue;
+            if (pooledUnused <= 0) {
+                carryInFromPriorCategory = 0;
+                continue;
+            }
 
             // Distribution weight (kept from the original design, not
             // something this pass was asked to change): countries are
@@ -537,8 +518,8 @@ public class PredictionService {
             // remaining demand, so the oldest queues get first claim on
             // redistributed visas rather than splitting purely pro rata by
             // current backlog size. In consular-shutdown mode, EB2 gets an
-            // extra 50% weight boost since it absorbs most of the era's
-            // spillover (see the EB2->EB3 holdback above).
+            // extra 50% weight boost, on top of the holdback below, since it
+            // absorbs most of the era's spillover.
             Map<Country, Long> oversubscribed = new HashMap<>();
             Map<Country, Long> remainingDemandByCountry = new HashMap<>();
             long totalWeight = 0;
@@ -560,7 +541,8 @@ public class PredictionService {
             }
 
             if (totalWeight <= 0) {
-                System.out.println(String.format("[CALCULATION] No oversubscribed demand for %s. Pool of %.2f goes unused.", cat, pooledUnused));
+                System.out.println(String.format("[CALCULATION] No oversubscribed demand for %s. Pool of %.2f falls through to the next category.", cat, pooledUnused));
+                carryInFromPriorCategory = pooledUnused;
                 continue;
             }
 
@@ -624,6 +606,36 @@ public class PredictionService {
                 supplyMap.get(entry.getKey()).put(cat, supplyMap.get(entry.getKey()).get(cat) + entry.getValue());
                 System.out.println(String.format("[CALCULATION] Redistributing %.2f unused %s visas to %s", entry.getValue(), cat, entry.getKey()));
             }
+
+            // Whatever of the pool couldn't be placed (every oversubscribed
+            // country in this category is now fully satisfied, but pool
+            // still has some left) cascades down to the next category, per
+            // INA 203(b)'s EB1->EB2->EB3 fall-through order.
+            double genuineLeftover = poolLeft;
+
+            // Consular-shutdown mode (kept from the original design, not
+            // something this pass was asked to change, just re-homed to fit
+            // the new horizontal-then-vertical order): EB2 is mostly filed
+            // domestically (AOS), while EB3 skews toward consular processing
+            // abroad, which is what a consular shutdown actually disrupts.
+            // So in that mode, only a fifth of EB2's genuine leftover falls
+            // through to EB3 -- the rest is held back and handed to this
+            // same round's oversubscribed EB2 countries as bonus supply
+            // (deliberately beyond their own remaining demand, mirroring the
+            // original design's intentional over-allocation for this one
+            // specific simulated scenario), rather than assuming a shutdown
+            // affects EB2 and EB3 equally.
+            if (consularShutdown && cat == EbCategory.EB2 && genuineLeftover > 0 && !oversubscribed.isEmpty()) {
+                double heldBack = genuineLeftover * 0.8;
+                genuineLeftover -= heldBack;
+                for (Map.Entry<Country, Long> entry : oversubscribed.entrySet()) {
+                    double bonus = heldBack * ((double) entry.getValue() / totalWeight);
+                    supplyMap.get(entry.getKey()).put(EbCategory.EB2, supplyMap.get(entry.getKey()).get(EbCategory.EB2) + bonus);
+                }
+                System.out.println(String.format("[CALCULATION] Consular Shutdown - Holding %.2f of EB2's leftover pool back for EB2 instead of passing it to EB3", heldBack));
+            }
+
+            carryInFromPriorCategory = genuineLeftover;
         }
 
         for (Country c : Country.values()) {
