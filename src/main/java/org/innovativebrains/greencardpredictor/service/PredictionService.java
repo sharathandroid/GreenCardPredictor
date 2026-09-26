@@ -38,6 +38,21 @@ import java.util.*;
  *     is now a distinct, explained outcome instead of being silently
  *     treated as if the category were wide open.
  *
+ * Added 2026-09-26 (previously flagged in GAPS_AND_FIXES.md as open gaps):
+ *  5. INA 202(b) cross-chargeability: Applicant.spouseCountryOfBirth lets a
+ *     beneficiary elect their spouse's country of birth instead of their own
+ *     when that yields a more favorable outcome (see estimateWait() and its
+ *     use in predict()). Never applied if it wouldn't help, or if the
+ *     spouse's country is itself restricted.
+ *  6. AOS-vs-consular-processing distinction for restricted countries:
+ *     Applicant.filingDomestically changes the restricted-country
+ *     explanation to acknowledge that domestic adjustment-of-status may
+ *     still be possible (per a June 2026 district court ruling), instead of
+ *     flatly stating issuance is blocked. Still can't produce a numeric
+ *     estimate for that path -- the backlog data isn't split by filing
+ *     location -- so this changes the explanation, not the underlying
+ *     supply/demand model.
+ *
  * NOT changed: the pre-existing consular-shutdown simulation (EB2 holdback
  * in the EB2->EB3 vertical spillover, EB2 weight boost in the horizontal
  * redistribution) and the 70/30 pre-2015-backlog-weighted priority used to
@@ -96,6 +111,33 @@ public class PredictionService {
         // change again; this area of law has changed multiple times within
         // 2026 alone.
         if (isRestricted(country)) {
+            // FIX (2026-09-26): Proclamation 10998's suspension is strongest
+            // for consular issuance abroad; a June 2026 district court ruling
+            // allowed some domestic adjustment-of-status (I-485) processing
+            // to continue for affected nationals. This app's backlog data
+            // isn't split by filing location, so a domestic filer still
+            // can't get a numeric estimate here -- but they get an
+            // explanation that reflects that possibility instead of a flat,
+            // possibly-inaccurate "blocked" statement.
+            if (applicant.isFilingDomestically()) {
+                return PredictionResult.builder()
+                        .restricted(true)
+                        .explanation(String.format(
+                            "As of %s, immigrant-visa issuance for %s is suspended under Presidential " +
+                            "Proclamation 10998 (eff. Jan 1, 2026), which is strongest for consular " +
+                            "processing abroad. A June 2026 district court ruling allowed some domestic " +
+                            "adjustment-of-status (Form I-485) processing to continue for affected " +
+                            "nationals, so a domestic filing may still be possible -- but this app's " +
+                            "backlog data isn't split by filing location, so it cannot produce a numeric " +
+                            "wait estimate for that path. Consult an immigration attorney and re-check " +
+                            "travel.state.gov/uscis.gov; this status is litigation-sensitive.",
+                            DATA_AS_OF, country))
+                        .formattedFilingWait("N/A (Restricted -- domestic AOS may be possible, not modeled)")
+                        .formattedFinalActionWait("N/A (Restricted -- domestic AOS may be possible, not modeled)")
+                        .finalActionWaitMonths(999)
+                        .filingWaitMonths(999)
+                        .build();
+            }
             return PredictionResult.builder()
                     .restricted(true)
                     .explanation(String.format(
@@ -138,18 +180,44 @@ public class PredictionService {
         Map<Country, Map<EbCategory, Double>> supplyMap =
                 calculateDynamicSupply(totalAnnualEbLimit, countryAnnualLimit, applicant.isConsularShutdown());
 
-        double annualSupply = supplyMap.get(country).get(category);
+        LocalDate applicantPD = applicant.getPriorityDate();
+
+        // FIX (2026-09-26): INA 202(b) cross-chargeability -- a beneficiary
+        // married to someone born in a different country may elect to be
+        // charged to the spouse's country of birth instead of their own,
+        // per 9 FAM 503.2, when that produces a more favorable (earlier)
+        // outcome. It's elective, so this only switches when the spouse's
+        // country is actually better; it never makes the result worse, and
+        // it doesn't apply if the spouse's country is itself restricted
+        // (cross-chargeability affects visa-number accounting, not the
+        // nationality-based travel-ban analysis above).
+        Country chargeabilityCountry = country;
+        String crossChargeabilityNote = "";
+        Country spouseCountry = applicant.getSpouseCountryOfBirth();
+        WaitEstimate estimate = estimateWait(country, category, applicantPD, supplyMap);
+        if (spouseCountry != null && spouseCountry != country && !isRestricted(spouseCountry)) {
+            WaitEstimate spouseEstimate = estimateWait(spouseCountry, category, applicantPD, supplyMap);
+            boolean spouseIsBetter = !spouseEstimate.unauthorized()
+                    && (estimate.unauthorized() || spouseEstimate.finalWaitMonths() < estimate.finalWaitMonths());
+            if (spouseIsBetter) {
+                chargeabilityCountry = spouseCountry;
+                estimate = spouseEstimate;
+                crossChargeabilityNote = String.format(
+                    " [CROSS-CHARGEABILITY (INA 202(b)) ELECTED: charged to spouse's country of birth " +
+                    "(%s) instead of %s -- yields a more favorable outcome.]", spouseCountry, country);
+            }
+        }
 
         // 1. Anchor to Official Visa Bulletin Dates
-        if (visaBulletinService.isFinalActionUnauthorized(country, category)) {
+        if (estimate.unauthorized()) {
             return PredictionResult.builder()
                     .restricted(false)
                     .explanation(String.format(
                         "The %s Visa Bulletin marks %s %s Final Action as \"Unauthorized\": the annual " +
                         "limit for this category/country has already been reached for the current fiscal " +
                         "year. No further final action is possible until new numbers become available at " +
-                        "the start of the next fiscal year (normally October 1).",
-                        VisaBulletinService.BULLETIN_MONTH, country, category))
+                        "the start of the next fiscal year (normally October 1).%s",
+                        visaBulletinService.getBulletinMonth(), chargeabilityCountry, category, crossChargeabilityNote))
                     .formattedFilingWait("N/A (Unauthorized this FY)")
                     .formattedFinalActionWait("N/A (Unauthorized this FY)")
                     .finalActionWaitMonths(999)
@@ -157,28 +225,8 @@ public class PredictionService {
                     .build();
         }
 
-        LocalDate filingCutOff = visaBulletinService.getFilingCutOff(country, category);
-        LocalDate finalActionCutOff = visaBulletinService.getFinalActionCutOff(country, category);
-
-        // 2. Calculate Volume specifically AHEAD of Applicant starting from Bulletin Date
-        LocalDate applicantPD = applicant.getPriorityDate();
-
-        long volumeAheadOfFiling = excelDataService.getInventoryBetween(country, category, filingCutOff, applicantPD);
-        volumeAheadOfFiling += excelDataService.getI140Between(country, category, filingCutOff, applicantPD);
-
-        long volumeAheadOfFinalAction = excelDataService.getInventoryBetween(country, category, finalActionCutOff, applicantPD);
-        volumeAheadOfFinalAction += excelDataService.getI140Between(country, category, finalActionCutOff, applicantPD);
-
-        long finalWaitMonths;
-        long filingWaitMonths;
-
-        if (annualSupply > 0) {
-            filingWaitMonths = (long) ((volumeAheadOfFiling / annualSupply) * 12);
-            finalWaitMonths = (long) ((volumeAheadOfFinalAction / annualSupply) * 12);
-        } else {
-            finalWaitMonths = 600;
-            filingWaitMonths = 300;
-        }
+        long filingWaitMonths = estimate.filingWaitMonths();
+        long finalWaitMonths = estimate.finalWaitMonths();
 
         LocalDate filingDate = LocalDate.now().plusMonths(filingWaitMonths);
         LocalDate finalActionDate = LocalDate.now().plusMonths(finalWaitMonths);
@@ -201,11 +249,51 @@ public class PredictionService {
                 .formattedFilingWait(formattedFilingWait)
                 .formattedFinalActionWait(formattedFinalActionWait)
                 .explanation(String.format(
-                    "Bulletin-Anchored Prediction (%s bulletin). Filing Cut-off: %s, Final Action Cut-off: %s. " +
-                    "Annual supply: ~%.0f. Inventory + I-140 Ahead of Filing PD: %d. Priority Date: %s.%s",
-                    VisaBulletinService.BULLETIN_MONTH, filingCutOff, finalActionCutOff, annualSupply,
-                    volumeAheadOfFiling, applicantPD, shutdownNote))
+                    "Bulletin-Anchored Prediction (%s bulletin, chargeable to %s). Filing Cut-off: %s, Final Action Cut-off: %s. " +
+                    "Annual supply: ~%.0f. Inventory + I-140 Ahead of Filing PD: %d. Priority Date: %s.%s%s",
+                    visaBulletinService.getBulletinMonth(), chargeabilityCountry, estimate.filingCutOff(), estimate.finalActionCutOff(),
+                    supplyMap.get(chargeabilityCountry).get(category), estimate.volumeAheadOfFiling(), applicantPD,
+                    shutdownNote, crossChargeabilityNote))
                 .build();
+    }
+
+    /**
+     * One country/category's bulletin-anchored wait estimate. Used both for
+     * the applicant's own country and, when INA 202(b) cross-chargeability
+     * is in play, their spouse's country of birth, so the two can be
+     * compared and the more favorable one elected.
+     */
+    private record WaitEstimate(long filingWaitMonths, long finalWaitMonths, LocalDate filingCutOff,
+                                 LocalDate finalActionCutOff, long volumeAheadOfFiling, boolean unauthorized) {
+    }
+
+    private WaitEstimate estimateWait(Country chargeabilityCountry, EbCategory category, LocalDate applicantPD,
+                                       Map<Country, Map<EbCategory, Double>> supplyMap) {
+        if (visaBulletinService.isFinalActionUnauthorized(chargeabilityCountry, category)) {
+            return new WaitEstimate(999, 999, null, null, 0, true);
+        }
+
+        double annualSupply = supplyMap.get(chargeabilityCountry).get(category);
+        LocalDate filingCutOff = visaBulletinService.getFilingCutOff(chargeabilityCountry, category);
+        LocalDate finalActionCutOff = visaBulletinService.getFinalActionCutOff(chargeabilityCountry, category);
+
+        long volumeAheadOfFiling = excelDataService.getInventoryBetween(chargeabilityCountry, category, filingCutOff, applicantPD);
+        volumeAheadOfFiling += excelDataService.getI140Between(chargeabilityCountry, category, filingCutOff, applicantPD);
+
+        long volumeAheadOfFinalAction = excelDataService.getInventoryBetween(chargeabilityCountry, category, finalActionCutOff, applicantPD);
+        volumeAheadOfFinalAction += excelDataService.getI140Between(chargeabilityCountry, category, finalActionCutOff, applicantPD);
+
+        long finalWaitMonths;
+        long filingWaitMonths;
+        if (annualSupply > 0) {
+            filingWaitMonths = (long) ((volumeAheadOfFiling / annualSupply) * 12);
+            finalWaitMonths = (long) ((volumeAheadOfFinalAction / annualSupply) * 12);
+        } else {
+            finalWaitMonths = 600;
+            filingWaitMonths = 300;
+        }
+
+        return new WaitEstimate(filingWaitMonths, finalWaitMonths, filingCutOff, finalActionCutOff, volumeAheadOfFiling, false);
     }
 
     private boolean isRestricted(Country country) {
@@ -352,11 +440,63 @@ public class PredictionService {
 
             long totalRemainingDemand = remainingDemandByCountry.values().stream().mapToLong(Long::longValue).sum();
             double visasDistributed = Math.min(pooledUnused, totalRemainingDemand);
-            for (Map.Entry<Country, Long> entry : oversubscribed.entrySet()) {
-                double shareOfWeight = (double) entry.getValue() / totalWeight;
-                double addedSupply = visasDistributed * shareOfWeight;
-                supplyMap.get(entry.getKey()).put(cat, supplyMap.get(entry.getKey()).get(cat) + addedSupply);
-                System.out.println(String.format("[CALCULATION] Redistributing %.2f unused %s visas to %s", addedSupply, cat, entry.getKey()));
+
+            // FIX (2026-09-26): a straight one-pass weight-proportional split
+            // (visasDistributed * shareOfWeight, added with no cap) could hand
+            // a country MORE redistributed visas than its own remaining
+            // demand -- weight is a 70/30 blend of old-backlog and remaining
+            // demand, not equal to remaining demand itself, so a country with
+            // a huge pre-2015 backlog but a now-small remaining gap could
+            // still claim a large share. That's not just wasteful (supply
+            // exceeding real demand for that country/category), it also made
+            // the model non-monotonic: a LARGER total EB limit could lower a
+            // heavily-oversubscribed country's effective supply after
+            // redistribution, because other countries' pre-cap over-shares
+            // shifted as the numbers moved -- this surfaced as a failing test
+            // once real backlog data (see DATA_SOURCES.md) replaced the
+            // stale, much-smaller figures that never triggered the edge case.
+            //
+            // Water-filling instead: give each still-needy country its
+            // weight-proportional share of what's LEFT each round, capped at
+            // that country's own remaining demand; anything a capped country
+            // couldn't use goes back into the pool and is re-split among the
+            // countries still under their cap, repeating until the pool is
+            // gone or nobody remaining can use more. This guarantees no
+            // country's final supply ever exceeds its own demand, and makes
+            // supply monotonically non-decreasing in totalAnnualEbLimit.
+            Map<Country, Long> remainingCapacity = new HashMap<>(remainingDemandByCountry);
+            Map<Country, Long> activeWeights = new HashMap<>(oversubscribed);
+            Map<Country, Double> allocated = new HashMap<>();
+            double poolLeft = visasDistributed;
+
+            for (int round = 0; round < 50 && poolLeft > 1e-6 && !activeWeights.isEmpty(); round++) {
+                long activeTotalWeight = activeWeights.values().stream().mapToLong(Long::longValue).sum();
+                if (activeTotalWeight <= 0) break;
+
+                double distributedThisRound = 0;
+                List<Country> filled = new ArrayList<>();
+                for (Map.Entry<Country, Long> entry : activeWeights.entrySet()) {
+                    Country c = entry.getKey();
+                    double share = poolLeft * ((double) entry.getValue() / activeTotalWeight);
+                    double cap = remainingCapacity.get(c);
+                    double give = Math.min(share, cap);
+                    allocated.merge(c, give, Double::sum);
+                    distributedThisRound += give;
+                    double newCap = cap - give;
+                    remainingCapacity.put(c, (long) newCap);
+                    if (newCap <= 0) filled.add(c);
+                }
+                poolLeft -= distributedThisRound;
+                activeWeights.keySet().removeAll(filled);
+                // If nobody hit their cap this round, every share was fully
+                // used and the pool is (about to be) exhausted -- no need to
+                // keep looping.
+                if (filled.isEmpty()) break;
+            }
+
+            for (Map.Entry<Country, Double> entry : allocated.entrySet()) {
+                supplyMap.get(entry.getKey()).put(cat, supplyMap.get(entry.getKey()).get(cat) + entry.getValue());
+                System.out.println(String.format("[CALCULATION] Redistributing %.2f unused %s visas to %s", entry.getValue(), cat, entry.getKey()));
             }
         }
 

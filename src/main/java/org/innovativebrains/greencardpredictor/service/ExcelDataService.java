@@ -260,11 +260,36 @@ public class ExcelDataService {
      * I-485 "(Family)" category row. For a Q4/year-end report, that row's
      * "Fiscal Year - To Date" Approved column (index 9) is the full FY2025
      * total, not a partial-year figure.
+     *
+     * That raw I-485 "(Family)" figure mixes uncapped immediate-relative
+     * adjustments with capped family-preference (F1-F4) adjustments, because
+     * USCIS doesn't publish this report split by relationship category. This
+     * same workbook's two I-130 rows ARE split that way ("Immediate
+     * Relative" vs. "All Other Relative" -- the latter being the
+     * family-preference petition path), so their FYTD-Approved ratio is used
+     * as a weight to estimate what share of the I-485 "(Family)" approvals
+     * were preference-category: for FY2025, All Other Relative was ~8.6% of
+     * combined I-130 approvals, so the estimate is ~433,071 * 0.086 =~
+     * 37,300 rather than the full 433,071.
+     *
+     * This is still an estimate, not a direct measurement -- it assumes the
+     * immediate-relative/preference split ratio is similar between I-130
+     * petition approvals and I-485 adjustment approvals for the same period,
+     * which won't hold exactly (the two forms are filed by overlapping but
+     * not identical populations, and on different timelines). It's a real
+     * improvement over ignoring the split entirely, not a substitute for
+     * DOS's own preference-category breakdown (unavailable -- see the
+     * Javadoc on getFamilyVisasUsedPriorFiscalYear()).
      */
     private void loadFamilyVisaUsage() {
         try (InputStream is = new ClassPathResource(PRIOR_COMPLETED_FY_ALL_FORMS_FILE).getInputStream();
              Workbook workbook = new XSSFWorkbook(is)) {
             Sheet sheet = workbook.getSheetAt(0);
+
+            long familyI485Approved = -1;
+            long immediateRelativeI130Approved = -1;
+            long familyPreferenceI130Approved = -1;
+
             for (int i = 0; i <= sheet.getLastRowNum(); i++) {
                 Row row = sheet.getRow(i);
                 if (row == null) continue;
@@ -272,19 +297,37 @@ public class ExcelDataService {
                 Cell formCell = row.getCell(0);
                 Cell titleCell = row.getCell(1);
                 if (formCell == null || titleCell == null) continue;
-                if (!"I-485".equals(formCell.toString().trim())) continue;
-                if (!titleCell.toString().toUpperCase().contains("FAMILY")) continue;
+                String form = formCell.toString().trim();
+                String title = titleCell.toString().toUpperCase();
 
                 Cell fytdApprovedCell = row.getCell(9); // "Approved" under "Fiscal Year - To Date"
-                if (fytdApprovedCell != null) {
-                    try {
-                        familyI485ApprovedPriorFY = (long) Double.parseDouble(fytdApprovedCell.toString());
-                        familyI485DataLoaded = true;
-                    } catch (NumberFormatException e) { }
-                }
-                break;
+                if (fytdApprovedCell == null) continue;
+
+                try {
+                    long fytdApproved = (long) Double.parseDouble(fytdApprovedCell.toString());
+                    if ("I-485".equals(form) && title.contains("FAMILY")) {
+                        familyI485Approved = fytdApproved;
+                    } else if ("I-130".equals(form) && title.contains("IMMEDIATE RELATIVE")) {
+                        immediateRelativeI130Approved = fytdApproved;
+                    } else if ("I-130".equals(form) && title.contains("ALL OTHER RELATIVE")) {
+                        familyPreferenceI130Approved = fytdApproved;
+                    }
+                } catch (NumberFormatException e) { }
             }
-            System.out.println("Loaded prior-completed-FY family I-485 approvals: " + familyI485ApprovedPriorFY);
+
+            if (familyI485Approved >= 0) {
+                if (immediateRelativeI130Approved >= 0 && familyPreferenceI130Approved > 0) {
+                    double preferenceRatio = (double) familyPreferenceI130Approved
+                            / (immediateRelativeI130Approved + familyPreferenceI130Approved);
+                    familyI485ApprovedPriorFY = Math.round(familyI485Approved * preferenceRatio);
+                } else {
+                    // Couldn't find the I-130 split rows -- fall back to the
+                    // unweighted (mixed) figure rather than silently using 0.
+                    familyI485ApprovedPriorFY = familyI485Approved;
+                }
+                familyI485DataLoaded = true;
+            }
+            System.out.println("Loaded prior-completed-FY family-preference visa usage estimate: " + familyI485ApprovedPriorFY);
         } catch (Exception e) {
             System.err.println("Error loading prior-FY family visa usage: " + e.getMessage());
         }
@@ -298,23 +341,23 @@ public class ExcelDataService {
      * GAPS_AND_FIXES.md item #1 for why the old formula always evaluated to
      * zero).
      *
-     * This now returns FY2025's actual USCIS domestic I-485 "(Family)"
-     * approval count (433,071, loaded by loadFamilyVisaUsage() above) instead
-     * of a flat placeholder. Two known, documented limitations remain (see
-     * DATA_SOURCES.md #4 for the full explanation and the sources that would
-     * close them):
+     * This now returns an estimated FY2025 family-preference-only usage
+     * figure (~37,300), derived from USCIS's domestic I-485 "(Family)"
+     * approval count (433,071) weighted down by the immediate-relative vs.
+     * family-preference split observed in that same fiscal year's I-130
+     * approvals (~8.6% preference) -- see loadFamilyVisaUsage()'s Javadoc for
+     * the full methodology and why it's a weighted estimate, not a direct
+     * measurement, of the category split.
      *
-     *  1. USCIS's public report doesn't split "(Family)" approvals between
-     *     uncapped immediate relatives and capped family-preference (F1-F4)
-     *     categories, so this figure OVERSTATES true preference-only usage --
-     *     which biases the resulting spillover estimate toward 0 (never
-     *     overpromises a wait time), not the other way around.
-     *  2. It covers domestic adjustments only. It excludes immigrant visas
-     *     issued abroad by consular posts (DOS Visa Office Annual Report
-     *     Table VI), which also count against the family limit and typically
-     *     account for a large share of usage. travel.state.gov returned
-     *     HTTP 403 on every attempt from this environment (confirmed
-     *     2026-09-26), so that half of the figure could not be incorporated.
+     * One limitation remains open (see DATA_SOURCES.md #4): this covers
+     * domestic adjustments only. It excludes immigrant visas issued abroad by
+     * consular posts (DOS Visa Office Annual Report Table VI), which also
+     * count against the family limit and typically account for a large share
+     * of usage. travel.state.gov returned HTTP 403 on every direct attempt
+     * and on every Wayback Machine snapshot since July 2024 (all later
+     * snapshots captured a Cloudflare block page instead of the real site),
+     * so that half of the figure could not be incorporated from this
+     * environment.
      *
      * Falls back to the statutory floor (226,000, i.e. spillover = 0) if the
      * source file or row can't be parsed, same fail-safe as before.

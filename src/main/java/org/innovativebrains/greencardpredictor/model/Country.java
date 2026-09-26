@@ -1,9 +1,14 @@
 package org.innovativebrains.greencardpredictor.model;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
+import org.yaml.snakeyaml.Yaml;
 
+import java.io.IOException;
+import java.io.InputStream;
 import java.util.Collections;
 import java.util.EnumSet;
+import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -35,9 +40,10 @@ import java.util.Set;
  *
  * IMPORTANT: This area of law is changing roughly monthly via new
  * proclamations and litigation. Treat RESTRICTED_COUNTRIES as a snapshot
- * dated 2026-09-25, not a permanent fact. Ideally this table should be
- * externalized to a config file the operator can update without a
- * redeploy -- see the gap noted in GAPS_AND_FIXES.md.
+ * dated 2026-09-25, not a permanent fact. As of 2026-09-26, the list itself
+ * lives in restricted-countries.yml (see that file), not in this source
+ * file -- update it there when the list changes; no Java change or
+ * recompile of restriction logic is needed.
  * ------------------------------------------------------------------------
  */
 public enum Country {
@@ -160,30 +166,72 @@ public enum Country {
     TUNISIA,
     UGANDA,
     URUGUAY,
-    UZBEKISTAN;
+    UZBEKISTAN,
+    VIETNAM; // Added 2026-09-26: USCIS's i140_rec_by_class_country_fy2026_q3_v1
+             // report gave Vietnam its own per-country sheet (replacing Nigeria's
+             // slot from the prior edition); this enum previously had no VIETNAM
+             // value at all, so that data was silently folding into ROW.
 
     /**
-     * Countries where, as of 2026-09-25, immigrant-visa issuance (the thing
-     * this predictor cares about) is suspended under Proclamation 10998 --
-     * either as part of the "full" ban, the "partial" ban (which still
-     * suspends immigrant categories), or the single-category (Turkmenistan)
-     * restriction. All three groups block green-card issuance, so all are
-     * treated the same way here; PREDICTION_STRATEGY.md documents the
-     * distinction for anyone who needs it (e.g. to separately model
-     * nonimmigrant visas later).
+     * FIX (2026-09-26): previously a hardcoded EnumSet.of(...) literal here,
+     * which meant every change to the restricted-country list required a
+     * Java source change and recompile. Now loaded from
+     * restricted-countries.yml (see that file for the current list,
+     * citations, and how to update it) -- the goal flagged in
+     * GAPS_AND_FIXES.md's "Config-driven restricted-country list" item.
+     *
+     * All three suspension types (full, partial, single-category) currently
+     * block green-card issuance identically for this predictor's purposes,
+     * so isRestricted() doesn't distinguish them; PREDICTION_STRATEGY.md
+     * documents the distinction for anyone who needs it (e.g. to separately
+     * model nonimmigrant visas later).
+     *
+     * Deliberately NOT a Spring-managed @ConfigurationProperties bean like
+     * VisaBulletinProperties: Country is a plain enum, which can't be a
+     * Spring-managed bean, and is used directly in unit tests with no Spring
+     * context. So this parses the YAML file directly with SnakeYAML (already
+     * on the classpath -- Spring Boot itself uses it for application.yml
+     * support) in a static initializer instead. Fails loudly at class-load
+     * time if the file is missing, malformed, or names an unknown country --
+     * silently falling back to an empty set here would mean an actually-
+     * banned country gets treated as unrestricted, which is worse than
+     * crashing at startup.
      */
-    private static final Set<Country> RESTRICTED_COUNTRIES = Collections.unmodifiableSet(EnumSet.of(
-        // Full suspension (19 + Palestinian Authority)
-        AFGHANISTAN, MYANMAR, BURKINA_FASO, CHAD, REPUBLIC_OF_CONGO, EQUATORIAL_GUINEA,
-        ERITREA, HAITI, IRAN, LAOS, LIBYA, MALI, NIGER, SIERRA_LEONE, SOMALIA,
-        SOUTH_SUDAN, SUDAN, SYRIA, YEMEN, PALESTINIAN_AUTHORITY,
-        // Partial suspension (19) -- immigrant visas included
-        ANGOLA, ANTIGUA_AND_BARBUDA, BENIN, BURUNDI, IVORY_COAST, CUBA, DOMINICA,
-        GABON, GAMBIA, MALAWI, MAURITANIA, NIGERIA, SENEGAL, TANZANIA, TOGO, TONGA,
-        VENEZUELA, ZAMBIA, ZIMBABWE,
-        // Single-category (1)
-        TURKMENISTAN
-    ));
+    private static final Set<Country> RESTRICTED_COUNTRIES = loadRestrictedCountries();
+
+    @SuppressWarnings("unchecked")
+    private static Set<Country> loadRestrictedCountries() {
+        Map<String, Object> root;
+        try (InputStream is = Country.class.getResourceAsStream("/restricted-countries.yml")) {
+            if (is == null) {
+                throw new IllegalStateException("restricted-countries.yml not found on classpath");
+            }
+            root = new Yaml().load(is);
+        } catch (IOException e) {
+            throw new IllegalStateException("Failed to load restricted-countries.yml", e);
+        }
+
+        Object section = root.get("restricted-countries");
+        if (!(section instanceof Map)) {
+            throw new IllegalStateException("restricted-countries.yml is missing the 'restricted-countries' key");
+        }
+        Map<String, Object> groups = (Map<String, Object>) section;
+
+        Set<Country> result = EnumSet.noneOf(Country.class);
+        for (Object groupValue : groups.values()) {
+            if (!(groupValue instanceof List)) continue;
+            for (Object countryName : (List<Object>) groupValue) {
+                String key = String.valueOf(countryName).trim();
+                try {
+                    result.add(Country.valueOf(key));
+                } catch (IllegalArgumentException e) {
+                    throw new IllegalStateException(
+                        "restricted-countries.yml names an unknown country: " + key, e);
+                }
+            }
+        }
+        return Collections.unmodifiableSet(result);
+    }
 
     public boolean isRestricted() {
         return RESTRICTED_COUNTRIES.contains(this);
@@ -233,6 +281,7 @@ public enum Country {
         if (c.contains("MEXICO")) return MEXICO;
         if (c.contains("BRAZIL")) return BRAZIL;
         if (c.contains("VENEZUELA")) return VENEZUELA;
+        if (c.contains("VIETNAM")) return VIETNAM;
 
         // Direct enum name check (handles well-formed names like "CHAD", "MALI", "NIGER", "GABON", etc.)
         try {

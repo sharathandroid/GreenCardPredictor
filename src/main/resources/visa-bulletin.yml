@@ -1,0 +1,56 @@
+# Visa Bulletin data, bound into VisaBulletinProperties via Spring Boot's
+# @ConfigurationProperties. Update this file each month from
+# https://travel.state.gov/content/travel/en/legal/visa-law0/visa-bulletin.html
+# -- no Java change or recompile needed. See GAPS_AND_FIXES.md #5.
+#
+# Leaf values are either an ISO date (YYYY-MM-DD), the literal CURRENT (no
+# backlog -- everyone with an approved petition is current), or, for
+# final-action only, the literal UNAUTHORIZED (the annual/per-country ceiling
+# for this category has already been reached this fiscal year -- shown as "U"
+# on the real bulletin). Country/category combinations not listed here fall
+# back to a fixed default cutoff in VisaBulletinService, same as before this
+# file existed.
+visa-bulletin:
+  month: "September 2026"
+  final-action:
+    INDIA:
+      EB1: "2022-10-15"
+      EB2: "UNAUTHORIZED"
+      EB3: "2014-01-01"
+    CHINA:
+      EB1: "2023-07-01"
+      EB2: "2021-09-01"
+      EB3: "2022-01-01"
+    MEXICO:
+      EB1: "CURRENT"
+      EB2: "CURRENT"
+      EB3: "2024-09-01"
+    PHILIPPINES:
+      EB1: "CURRENT"
+      EB2: "CURRENT"
+      EB3: "2023-08-01"
+    ROW:
+      EB1: "CURRENT"
+      EB2: "CURRENT"
+      EB3: "2024-09-01"
+  filing:
+    INDIA:
+      EB1: "2023-12-01"
+      EB2: "2015-01-15"
+      EB3: "2015-01-15"
+    CHINA:
+      EB1: "2023-12-01"
+      EB2: "2022-01-01"
+      EB3: "2022-01-08"
+    MEXICO:
+      EB1: "CURRENT"
+      EB2: "CURRENT"
+      EB3: "CURRENT"
+    PHILIPPINES:
+      EB1: "CURRENT"
+      EB2: "CURRENT"
+      EB3: "2024-01-01"
+    ROW:
+      EB1: "CURRENT"
+      EB2: "CURRENT"
+      EB3: "CURRENT"

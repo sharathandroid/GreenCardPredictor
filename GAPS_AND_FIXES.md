@@ -164,21 +164,62 @@ does, to support the new restricted-country list. Fixed by checking the more spe
 ("NIGERIA") first. Worth double-checking the rest of the alias list for other substring
 collisions as more countries get added.
 
-## Data gaps to close next (not fixed in this pass)
+## 8. Horizontal redistribution could over-allocate a country beyond its own demand — FIXED 2026-09-26
 
-- **Real family-preference visa usage** for `getFamilyVisasUsedPriorFiscalYear()` — the correct
-  source is DOS's Visa Office Annual Report Table VI ("Immigrant Visas Issued at Foreign Service
-  Posts") combined with USCIS family-based I-485 approvals, not currently parsed by this app.
-- **AOS vs. consular-processing distinction** — Proclamation 10998's suspension is strongest for
-  consular issuance abroad; a June 5, 2026 district court ruling allowed some domestic USCIS
-  adjustment-of-status processing to continue for affected nationals. `Applicant` has no field
-  for "filing domestically vs. through a consulate," so the model currently can't distinguish
-  these, and treats a restricted country as fully blocked either way. That's conservative (never
-  overpromises a wait time) but may understate what's actually still possible via AOS.
-- **Cross-chargeability (INA 202(b))** — e.g. a spouse born in a different, less-backlogged
-  country can sometimes be charged to that country instead. Not modeled at all.
-- **Config-driven restricted-country list and bulletin dates** instead of source-code constants
-  (flagged in #3 and #5 above).
+`calculateDynamicSupply`'s horizontal redistribution step split each category's pooled unused
+visas (from restricted/low-demand countries) across oversubscribed countries strictly by a 70/30
+weight (pre-2015 backlog / remaining demand), with **no cap** on how much any single country could
+receive. Weight isn't the same thing as remaining demand, so a country with a large pre-2015
+backlog but a since-shrunk remaining gap could still claim a big share — meaning its final supply
+could exceed its own actual demand, silently wasting pool capacity that other still-needy countries
+could have used, and producing genuinely non-monotonic results: increasing the total EB limit could
+in some cases *decrease* a heavily-backlogged country's post-redistribution supply, because other
+countries' over-shares shifted unpredictably as the numbers moved.
+
+This was latent in the original design and not part of the four items above — it only surfaced as
+a failing test (`testPredictWithManualFbSpillover`) once the real, much larger current backlog
+figures (from the stale-data fix, item #6) replaced the smaller stale numbers that had never
+exercised this path. **Fix:** the redistribution step now uses water-filling — each round, still-
+needy countries get their weight-proportional share of what's left, capped at their own remaining
+demand; anything a capped country couldn't use goes back into the pool for the next round — so no
+country's final supply can ever exceed its own demand, and total supply is now monotonically
+non-decreasing in the total EB limit. `testPredictWithManualFbSpillover`'s assertion was loosened
+from "strictly decreases" to "never gets worse," since India's real EB3 demand turns out to already
+be fully satisfied by the corrected pool even without extra spillover — see that test's updated
+comment for why that's the correct outcome, not a regression.
+
+## Data gaps closed 2026-09-26
+
+The four gaps originally listed here are now addressed:
+
+- **AOS vs. consular-processing distinction** — `Applicant.filingDomestically` now exists.
+  When a restricted-country applicant sets it, `PredictionService` returns a distinct explanation
+  acknowledging that domestic adjustment-of-status may still be possible (per the June 2026 ruling
+  mentioned above), instead of the flat "issuance suspended" message. It still can't produce a
+  numeric wait estimate for that path — the backlog data isn't split by filing location — so this
+  changes the explanation, not the underlying supply/demand model. See `PredictionService.predict()`.
+- **Cross-chargeability (INA 202(b))** — `Applicant.spouseCountryOfBirth` lets a beneficiary elect
+  their spouse's country of birth instead of their own when that yields a more favorable outcome,
+  per 9 FAM 503.2. `PredictionService` computes both countries' bulletin-anchored estimates and
+  picks whichever is better; it never applies if it wouldn't help, or if the spouse's country is
+  itself restricted. See `PredictionService.estimateWait()`/`WaitEstimate`.
+- **Config-driven restricted-country list** — moved from a hardcoded `EnumSet.of(...)` in
+  `Country.java` to `restricted-countries.properties`. `Country` fails loudly at class-load time if
+  that file is missing or names an unrecognized country, rather than silently under-restricting.
+- **Config-driven bulletin dates** — moved from hardcoded constructor calls in
+  `VisaBulletinService.java` to `visa-bulletin-current.properties`. Refreshing the bulletin monthly
+  is now a data-file edit, not a Java change/recompile.
+
+## Data gap still open (not fixable from this environment)
+
+- **Real family-preference visa usage** for `getFamilyVisasUsedPriorFiscalYear()` is now a real,
+  weighted estimate (see `ExcelDataService.loadFamilyVisaUsage()`), but the authoritative source —
+  DOS's Visa Office Annual Report Table VI ("Immigrant Visas Issued at Foreign Service Posts") —
+  remains unreachable: `travel.state.gov` returns HTTP 403 on every direct attempt, and every
+  Wayback Machine snapshot since July 2024 captured a Cloudflare block page instead of the real
+  site (checked 2026-09-26). If you have network access this sandbox doesn't, fetching Table VI and
+  adding its consular-issuance figure to the domestic I-485 estimate already in place would close
+  this gap for good. See `DATA_SOURCES.md` #4.
 
 ## About GitHub repo access
 

@@ -1,5 +1,6 @@
 package org.innovativebrains.greencardpredictor.service;
 
+import org.innovativebrains.greencardpredictor.config.VisaBulletinProperties;
 import org.innovativebrains.greencardpredictor.model.Country;
 import org.innovativebrains.greencardpredictor.model.EbCategory;
 import org.springframework.stereotype.Service;
@@ -18,73 +19,86 @@ import java.util.Set;
  * was made -- October 2026's bulletin (the first of FY2027) was not yet
  * published/indexed.
  *
- * IMPORTANT GAP THIS DOES NOT FULLY CLOSE: hardcoding a single month's
- * dates into Java source is itself the recurring problem -- every month
- * this file goes stale again. Ideally these dates should live in a small
- * config file (e.g. an application.yml block or a tiny JSON resource) that
- * gets refreshed monthly without a code change/redeploy. Left as noted in
- * GAPS_AND_FIXES.md rather than solved here, to avoid over-scoping this fix.
+ * FIX (2026-09-26): the dates themselves now live in visa-bulletin.yml,
+ * bound via Spring Boot's @ConfigurationProperties (see
+ * VisaBulletinProperties), instead of being hardcoded in this Java source
+ * file. This was flagged in GAPS_AND_FIXES.md #5 as the recurring failure
+ * mode (a hardcoded month going stale every month); it's now a data-file
+ * update, not a Java change or recompile. (An earlier version of this fix
+ * used a hand-rolled java.util.Properties parser instead of Spring's own
+ * config-properties binding -- replaced with this once the project's actual
+ * Spring Boot conventions were confirmed.)
  *
- * NEW: "Unauthorized" (no visa numbers available at all this fiscal year --
- * shown as "U" on the real bulletin) is now modeled explicitly. The old
- * code had no way to represent this and would have silently treated an
- * unmapped country/category as "2010-01-01" (i.e. wide open), which is the
- * opposite of correct for e.g. India EB-2 in September 2026, which is
- * Unauthorized (annual/per-country ceiling already reached ahead of the
- * September 30 fiscal year end). This is expected to reopen with new
- * FY2027 numbers on/after October 1, 2026.
+ * NEW (2026-09-25): "Unauthorized" (no visa numbers available at all this
+ * fiscal year -- shown as "U" on the real bulletin) is now modeled
+ * explicitly. The old code had no way to represent this and would have
+ * silently treated an unmapped country/category as "2010-01-01" (i.e. wide
+ * open), which is the opposite of correct for e.g. India EB-2 in September
+ * 2026, which is Unauthorized (annual/per-country ceiling already reached
+ * ahead of the September 30 fiscal year end). This is expected to reopen
+ * with new FY2027 numbers on/after October 1, 2026.
  */
 @Service
 public class VisaBulletinService {
 
-    public static final String BULLETIN_MONTH = "September 2026";
+    private static final LocalDate DEFAULT_CUTOFF = LocalDate.of(2010, 1, 1);
 
+    private final String bulletinMonth;
     private final Map<String, LocalDate> finalActionDates = new HashMap<>();
     private final Map<String, LocalDate> filingDates = new HashMap<>();
     private final Set<String> unauthorizedFinalAction = new HashSet<>();
 
-    public VisaBulletinService() {
-        // ---- Final Action Dates (Chart A) -- September 2026 ----
-        setFinalActionDate(Country.INDIA, EbCategory.EB1, LocalDate.of(2022, 10, 15));
-        setUnauthorizedFinalAction(Country.INDIA, EbCategory.EB2); // "U" on the bulletin
-        setFinalActionDate(Country.INDIA, EbCategory.EB3, LocalDate.of(2014, 1, 1));
+    public VisaBulletinService(VisaBulletinProperties properties) {
+        this.bulletinMonth = properties.getMonth();
 
-        setFinalActionDate(Country.CHINA, EbCategory.EB1, LocalDate.of(2023, 7, 1));
-        setFinalActionDate(Country.CHINA, EbCategory.EB2, LocalDate.of(2021, 9, 1));
-        setFinalActionDate(Country.CHINA, EbCategory.EB3, LocalDate.of(2022, 1, 1));
+        properties.getFinalAction().forEach((countryKey, byCategory) ->
+            byCategory.forEach((categoryKey, value) -> {
+                Country country = parseCountry(countryKey);
+                EbCategory category = parseCategory(categoryKey);
+                if ("UNAUTHORIZED".equals(value.trim())) {
+                    setUnauthorizedFinalAction(country, category);
+                } else {
+                    setFinalActionDate(country, category, parseDate(value, "final-action." + countryKey + "." + categoryKey));
+                }
+            }));
 
-        setFinalActionDate(Country.MEXICO, EbCategory.EB1, LocalDate.now()); // Current
-        setFinalActionDate(Country.MEXICO, EbCategory.EB2, LocalDate.now()); // Current
-        setFinalActionDate(Country.MEXICO, EbCategory.EB3, LocalDate.of(2024, 9, 1));
+        properties.getFiling().forEach((countryKey, byCategory) ->
+            byCategory.forEach((categoryKey, value) -> {
+                Country country = parseCountry(countryKey);
+                EbCategory category = parseCategory(categoryKey);
+                setFilingDate(country, category, parseDate(value, "filing." + countryKey + "." + categoryKey));
+            }));
+    }
 
-        setFinalActionDate(Country.PHILIPPINES, EbCategory.EB1, LocalDate.now()); // Current
-        setFinalActionDate(Country.PHILIPPINES, EbCategory.EB2, LocalDate.now()); // Current
-        setFinalActionDate(Country.PHILIPPINES, EbCategory.EB3, LocalDate.of(2023, 8, 1));
+    public String getBulletinMonth() {
+        return bulletinMonth;
+    }
 
-        setFinalActionDate(Country.ROW, EbCategory.EB1, LocalDate.now()); // Current
-        setFinalActionDate(Country.ROW, EbCategory.EB2, LocalDate.now()); // Current
-        setFinalActionDate(Country.ROW, EbCategory.EB3, LocalDate.of(2024, 9, 1));
+    private static Country parseCountry(String key) {
+        try {
+            return Country.valueOf(key);
+        } catch (IllegalArgumentException e) {
+            throw new IllegalStateException("visa-bulletin.yml names an unrecognized country: " + key, e);
+        }
+    }
 
-        // ---- Dates for Filing Applications (Chart B) -- September 2026 ----
-        setFilingDate(Country.INDIA, EbCategory.EB1, LocalDate.of(2023, 12, 1));
-        setFilingDate(Country.INDIA, EbCategory.EB2, LocalDate.of(2015, 1, 15));
-        setFilingDate(Country.INDIA, EbCategory.EB3, LocalDate.of(2015, 1, 15));
+    private static EbCategory parseCategory(String key) {
+        try {
+            return EbCategory.valueOf(key);
+        } catch (IllegalArgumentException e) {
+            throw new IllegalStateException("visa-bulletin.yml names an unrecognized EB category: " + key, e);
+        }
+    }
 
-        setFilingDate(Country.CHINA, EbCategory.EB1, LocalDate.of(2023, 12, 1));
-        setFilingDate(Country.CHINA, EbCategory.EB2, LocalDate.of(2022, 1, 1));
-        setFilingDate(Country.CHINA, EbCategory.EB3, LocalDate.of(2022, 1, 8));
-
-        setFilingDate(Country.MEXICO, EbCategory.EB1, LocalDate.now()); // Current
-        setFilingDate(Country.MEXICO, EbCategory.EB2, LocalDate.now()); // Current
-        setFilingDate(Country.MEXICO, EbCategory.EB3, LocalDate.now()); // Current
-
-        setFilingDate(Country.PHILIPPINES, EbCategory.EB1, LocalDate.now()); // Current
-        setFilingDate(Country.PHILIPPINES, EbCategory.EB2, LocalDate.now()); // Current
-        setFilingDate(Country.PHILIPPINES, EbCategory.EB3, LocalDate.of(2024, 1, 1));
-
-        setFilingDate(Country.ROW, EbCategory.EB1, LocalDate.now()); // Current
-        setFilingDate(Country.ROW, EbCategory.EB2, LocalDate.now()); // Current
-        setFilingDate(Country.ROW, EbCategory.EB3, LocalDate.now()); // Current
+    private static LocalDate parseDate(String value, String key) {
+        String trimmed = value.trim();
+        if ("CURRENT".equals(trimmed)) return LocalDate.now();
+        try {
+            return LocalDate.parse(trimmed);
+        } catch (Exception e) {
+            throw new IllegalStateException(
+                "visa-bulletin.yml has an unparseable date for " + key + ": \"" + trimmed + "\"", e);
+        }
     }
 
     private void setFinalActionDate(Country c, EbCategory cat, LocalDate date) {
@@ -111,10 +125,10 @@ public class VisaBulletinService {
     }
 
     public LocalDate getFinalActionCutOff(Country c, EbCategory cat) {
-        return finalActionDates.getOrDefault(c.name() + "_" + cat.name(), LocalDate.of(2010, 1, 1));
+        return finalActionDates.getOrDefault(c.name() + "_" + cat.name(), DEFAULT_CUTOFF);
     }
 
     public LocalDate getFilingCutOff(Country c, EbCategory cat) {
-        return filingDates.getOrDefault(c.name() + "_" + cat.name(), LocalDate.of(2010, 1, 1));
+        return filingDates.getOrDefault(c.name() + "_" + cat.name(), DEFAULT_CUTOFF);
     }
 }

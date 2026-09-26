@@ -46,6 +46,16 @@
             <version>5.2.2</version>
         </dependency>
         <dependency>
+            <!-- Used directly by Country.java to parse restricted-countries.yml
+                 (an enum can't be a Spring @ConfigurationProperties bean, so it
+                 can't use the same binding VisaBulletinProperties uses). Version
+                 is managed by spring-boot-starter-parent, which already pulls
+                 this in transitively for application.yml support; declared
+                 explicitly here since Country.java now depends on it directly. -->
+            <groupId>org.yaml</groupId>
+            <artifactId>snakeyaml</artifactId>
+        </dependency>
+        <dependency>
             <groupId>org.apache.logging.log4j</groupId>
             <artifactId>log4j-api</artifactId>
             <version>2.20.0</version>
