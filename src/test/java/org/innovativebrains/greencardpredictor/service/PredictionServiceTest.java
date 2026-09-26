@@ -133,4 +133,75 @@ class PredictionServiceTest {
             "Wait time should decrease or stay same when EB2 is prioritized during consular shutdown");
         assertTrue(shutdownResult.getExplanation().contains("CONSULAR SHUTDOWN MODE ACTIVE"));
     }
+
+    @Test
+    void testAll75RestrictedCountriesAreRecognizedAndRestricted() {
+        String[] restrictedList = {
+            "Afghanistan", "Albania", "Algeria", "Antigua and Barbuda", "Armenia",
+            "Azerbaijan", "Bahamas", "Bangladesh", "Barbados", "Belarus", "Belize",
+            "Bhutan", "Bosnia and Herzegovina", "Brazil", "Cambodia", "Cameroon",
+            "Cape Verde", "Colombia", "Cuba", "Democratic Republic of Congo",
+            "Dominica", "Egypt", "Eritrea", "Ethiopia", "Fiji", "Gambia", "Georgia",
+            "Ghana", "Grenada", "Guatemala", "Guinea", "Haiti", "Iran", "Iraq",
+            "Ivory Coast", "Jamaica", "Jordan", "Kazakhstan", "Kosovo", "Kuwait",
+            "Kyrgyzstan", "Laos", "Lebanon", "Liberia", "Libya", "Moldova",
+            "Mongolia", "Montenegro", "Morocco", "Myanmar", "Nepal", "Nicaragua",
+            "Nigeria", "North Macedonia", "Pakistan", "Republic of Congo", "Russia",
+            "Rwanda", "Saint Kitts and Nevis", "Saint Lucia",
+            "Saint Vincent and the Grenadines", "Senegal", "Sierra Leone", "Somalia",
+            "South Sudan", "Sudan", "Syria", "Tanzania", "Thailand", "Togo",
+            "Tunisia", "Uganda", "Uruguay", "Uzbekistan", "Yemen"
+        };
+
+        assertEquals(75, restrictedList.length, "Must contain exactly 75 countries");
+
+        for (String countryName : restrictedList) {
+            Country country = Country.fromString(countryName);
+            assertNotEquals(Country.ROW, country, "Country should not resolve to ROW: " + countryName);
+            assertTrue(country.isRestricted(), countryName + " should be marked as restricted");
+
+            Applicant applicant = new Applicant(country, EbCategory.EB2, LocalDate.of(2022, 1, 1));
+            PredictionResult result = predictionService.predict(applicant);
+            assertTrue(result.isRestricted(), countryName + " prediction should be restricted");
+            assertEquals("N/A (Restricted)", result.getFormattedFilingWait());
+            assertEquals(999, result.getFilingWaitMonths());
+            assertEquals(999, result.getFinalActionWaitMonths());
+            assertTrue(result.getExplanation().contains("suspended due to recent executive actions"));
+        }
+    }
+
+    @Test
+    void testCountryFromStringAliasesAndEdgeCases() {
+        assertEquals(Country.DEMOCRATIC_REPUBLIC_OF_CONGO, Country.fromString("Democratic Republic of the Congo"));
+        assertEquals(Country.DEMOCRATIC_REPUBLIC_OF_CONGO, Country.fromString("DRC"));
+        assertEquals(Country.REPUBLIC_OF_CONGO, Country.fromString("Republic of the Congo"));
+        assertEquals(Country.REPUBLIC_OF_CONGO, Country.fromString("Republic of Congo"));
+        assertEquals(Country.SOUTH_SUDAN, Country.fromString("South Sudan"));
+        assertEquals(Country.SUDAN, Country.fromString("Sudan"));
+        assertEquals(Country.MYANMAR, Country.fromString("Burma"));
+        assertEquals(Country.IVORY_COAST, Country.fromString("Cote d'Ivoire"));
+        assertEquals(Country.CAPE_VERDE, Country.fromString("Cabo Verde"));
+        assertEquals(Country.KYRGYZSTAN, Country.fromString("Kyrgyz Republic"));
+        assertEquals(Country.SAINT_KITTS_AND_NEVIS, Country.fromString("St. Kitts and Nevis"));
+        assertEquals(Country.SAINT_LUCIA, Country.fromString("St. Lucia"));
+        assertEquals(Country.SAINT_VINCENT_AND_THE_GRENADINES, Country.fromString("St. Vincent and the Grenadines"));
+        assertEquals(Country.GAMBIA, Country.fromString("The Gambia"));
+        assertEquals(Country.BAHAMAS, Country.fromString("The Bahamas"));
+        assertEquals(Country.RUSSIA, Country.fromString("Russian Federation"));
+        assertEquals(Country.NIGERIA, Country.fromString("Nigeria FY25"));
+        assertEquals(Country.DOMINICA, Country.fromString("Dominica"));
+        assertEquals(Country.ROW, Country.fromString("Dominican Republic"));
+        assertEquals(Country.GUINEA, Country.fromString("Guinea"));
+        assertEquals(Country.ROW, Country.fromString("Equatorial Guinea"));
+        assertEquals(Country.ROW, Country.fromString("Guinea-Bissau"));
+    }
+
+    @Test
+    void testStandardCountriesAreNotRestricted() {
+        assertFalse(Country.INDIA.isRestricted(), "India should not be restricted");
+        assertFalse(Country.CHINA.isRestricted(), "China should not be restricted");
+        assertFalse(Country.PHILIPPINES.isRestricted(), "Philippines should not be restricted");
+        assertFalse(Country.MEXICO.isRestricted(), "Mexico should not be restricted");
+        assertFalse(Country.ROW.isRestricted(), "ROW should not be restricted");
+    }
 }

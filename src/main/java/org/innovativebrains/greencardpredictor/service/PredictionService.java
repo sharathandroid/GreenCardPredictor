@@ -153,11 +153,7 @@ public class PredictionService {
     }
 
     private boolean isRestricted(Country country) {
-        return EnumSet.of(
-            Country.CUBA, Country.IRAN, Country.NORTH_KOREA, Country.SYRIA, 
-            Country.VENEZUELA, Country.AFGHANISTAN, Country.BELARUS, 
-            Country.MYANMAR, Country.NICARAGUA, Country.RUSSIA
-        ).contains(country);
+        return country != null && country.isRestricted();
     }
 
     private String formatToMonthYear(LocalDate date) {
