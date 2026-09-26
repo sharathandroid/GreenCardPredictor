@@ -278,6 +278,33 @@ this whole investigation — now returns Filing March 2029 / Final Action Februa
 supply ~17,121), a real, defensible multi-year wait consistent with a priority date years behind
 the bulletin's cutoff, using genuinely current statutory mechanics and the best real data available.
 
+## 11. Three more mechanics discrepancies vs. the actual INA text — FIXED 2026-09-26
+
+Found by checking a detailed INA §201/202/203 spec the project owner supplied against the
+running code. All three fixed:
+
+1. **FB-to-EB spillover entry point.** Was blended into the total pool before the 28.6%
+   category split (spreading it evenly across EB-1/EB-2/EB-3 at once). Now enters only at
+   EB-1 (`calculateDynamicSupply`'s per-category carry-in is seeded with `fbToEbSpillover`
+   instead of 0), matching INA 201(d)/203(b)'s actual entry point, and cascades down through
+   the normal waterfall only if EB-1 doesn't use it all.
+2. **Per-country cap base.** Was 7% of the spillover-inflated total (scaling the cap itself
+   whenever spillover existed). Now a fixed 7% of the 140,000 statutory base (INA 202(a)(2)),
+   consistent with spillover being an EB-1-only addition rather than a base-pool increase.
+3. **Redistribution ordering.** Was a custom 70/30 (pre-2015 backlog / remaining demand)
+   weighted split across oversubscribed countries. Now strict priority-date order (INA
+   202(a)(5)): `PredictionService.buildPriorityQueue()` merges every oversubscribed
+   country's remaining demand, broken down by priority-date year (`ExcelDataService`'s
+   existing `getInventoryYearly()` plus the new `getI140Yearly()`), into one global
+   year-sorted queue and fills it oldest-first regardless of country. This also means the
+   "never exceed a country's own demand" invariant (fixed in #8) now holds by construction
+   instead of needing the water-filling loop to enforce it.
+
+Verified: total distributed supply still conserves exactly to the correct limit, all 13
+tests pass. Results shifted in the expected direction — e.g. spillover now only helps a
+country's EB-2 after its own EB-1 demand is satisfied, and the lower fixed cap reduces
+baseline allocation for the five named countries versus the previous spillover-scaled figure.
+
 ## About GitHub repo access
 
 This analysis was originally done without GitHub access (reconstructed from an indexed copy of
