@@ -1,0 +1,73 @@
+# Presidential Proclamation 10998 (signed Dec 16, 2025, effective Jan 1, 2026)
+# -- the "travel ban." Snapshot as of 2026-09-25; see Country.java's
+# class-level Javadoc and PREDICTION_STRATEGY.md for full citations and the
+# legal distinction between suspension types.
+#
+# This app currently treats all three suspension types identically for
+# immigrant-visa/green-card purposes (all block issuance) -- the grouping
+# below is documentation, not app logic -- but it's kept accurate so a future
+# change that needs the distinction (e.g. modeling nonimmigrant visas
+# separately) doesn't have to re-research it.
+#
+# This file, not Country.java, is the single source of truth for
+# RESTRICTED_COUNTRIES -- update this file (no code change or recompile of
+# the restriction logic needed) when the list changes. Country.java will
+# fail fast at startup if this file is missing or names an unknown country,
+# rather than silently treating an actually-banned country as unrestricted.
+#
+# Note: Country is a plain enum (used directly in unit tests with no Spring
+# context), so this is parsed with SnakeYAML directly in a static
+# initializer rather than bound via @ConfigurationProperties -- an enum
+# can't be a Spring-managed bean. See visa-bulletin.yml/VisaBulletinProperties
+# for the equivalent config-properties-bound approach used where the
+# consuming class actually is a Spring bean (VisaBulletinService).
+restricted-countries:
+  # FULL suspension: immigrant AND nonimmigrant visa issuance
+  full:
+    - AFGHANISTAN
+    - MYANMAR
+    - BURKINA_FASO
+    - CHAD
+    - REPUBLIC_OF_CONGO
+    - EQUATORIAL_GUINEA
+    - ERITREA
+    - HAITI
+    - IRAN
+    - LAOS
+    - LIBYA
+    - MALI
+    - NIGER
+    - SIERRA_LEONE
+    - SOMALIA
+    - SOUTH_SUDAN
+    - SUDAN
+    - SYRIA
+    - YEMEN
+    - PALESTINIAN_AUTHORITY
+
+  # PARTIAL suspension: immigrant visas + B-1/B-2 + F/M/J suspended; other
+  # nonimmigrant categories (e.g. H-1B) remain generally available
+  partial:
+    - ANGOLA
+    - ANTIGUA_AND_BARBUDA
+    - BENIN
+    - BURUNDI
+    - IVORY_COAST
+    - CUBA
+    - DOMINICA
+    - GABON
+    - GAMBIA
+    - MALAWI
+    - MAURITANIA
+    - NIGERIA
+    - SENEGAL
+    - TANZANIA
+    - TOGO
+    - TONGA
+    - VENEZUELA
+    - ZAMBIA
+    - ZIMBABWE
+
+  # SINGLE_CATEGORY suspension: immigrant visas only
+  single-category:
+    - TURKMENISTAN
