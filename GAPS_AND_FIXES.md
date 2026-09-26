@@ -348,6 +348,42 @@ tests pass. Results shifted in the expected direction — e.g. spillover now onl
 country's EB-2 after its own EB-1 demand is satisfied, and the lower fixed cap reduces
 baseline allocation for the five named countries versus the previous spillover-scaled figure.
 
+## 15. Family-side redistribution modeled — how much of the restriction genuinely reaches EB — ADDED 2026-09-26
+
+The project owner pushed back twice on an earlier, too-simple assumption: first that restricted
+countries' unused family-preference visas simply become available to EB (rejected — overstates the
+effect, ignores that FB has its own internal redistribution), then correctly pointed out that
+backlogged countries can only absorb so much because they're *also* capped — at one **combined**
+15,820 (7%) ceiling across all capped categories, not five separate sub-caps, per INA 202(a)(4)(A)'s
+F2A exemption and the real "flexible numbers" mechanic.
+
+`FamilyPreferenceSpilloverService` models both levels of INA 202(a)(5)'s redistribution using real
+Table VI Part I category-level data (`family-preference-by-country.yml`, hand-extracted from the
+same PDFs behind item #10 — F1, F2A-exempt, F2A-subject, F2B, F3, F4, for Mexico/Philippines/
+India/China individually and the ~39 restricted countries combined):
+
+1. **Level 1 (horizontal, within-category):** unused numbers go to other oversubscribed countries
+   in that same category, capped at each country's real *combined* remaining headroom under 15,820
+   — not per-category sub-caps, which an earlier draft got wrong before this correction.
+2. **Level 2 (vertical cascade):** whatever still can't be placed falls F1→F3, F2A/F2B→F4, F3→F4.
+
+**Result, computed from real data, not estimated:** the four named countries had **24,222** of real
+combined headroom in FY2024 — more than the **20,935** (16,095 capped + 4,840 F2A-exempt) that
+restricted countries would have used. All of it gets absorbed at Level 1, before any vertical
+cascade or EB spillover — **genuine additional FB-to-EB spillover from the restriction = 0**,
+verified via the actual running code (`[FB-SPILLOVER]` log line), not hand-waved. This is now
+wired into `PredictionService.predict()` as an additive term on top of the baseline spillover
+(currently 0, but the model runs for real on every prediction — if a future data refresh changes
+the underlying FY2024→FY2026+ figures, or Rest-of-World's un-modeled absorption capacity turns out
+to matter, this term will move accordingly).
+
+**Known simplifications, all documented in the class Javadoc:** demand for the four named countries
+is modeled as "always enough to fill their combined ceiling" (matching well-documented real-world
+FB backlogs, not their literal FY2024 actual usage, which the analysis shows was below cap);
+Rest-of-World's own absorption capacity isn't modeled at all (conservative: can only make this
+report *more* unabsorbed leftover than reality, never less); F2A-exempt is assumed fully absorbed
+by real ongoing demand rather than computed from data this app doesn't have.
+
 ## About GitHub repo access
 
 This analysis was originally done without GitHub access (reconstructed from an indexed copy of

@@ -80,10 +80,13 @@ public class PredictionService {
 
     private final ExcelDataService excelDataService;
     private final VisaBulletinService visaBulletinService;
+    private final FamilyPreferenceSpilloverService familyPreferenceSpilloverService;
 
-    public PredictionService(ExcelDataService excelDataService, VisaBulletinService visaBulletinService) {
+    public PredictionService(ExcelDataService excelDataService, VisaBulletinService visaBulletinService,
+                              FamilyPreferenceSpilloverService familyPreferenceSpilloverService) {
         this.excelDataService = excelDataService;
         this.visaBulletinService = visaBulletinService;
+        this.familyPreferenceSpilloverService = familyPreferenceSpilloverService;
     }
 
     // Total Employment-Based (EB) annual limit is approx 140,000 (INA 201(d)).
@@ -211,13 +214,34 @@ public class PredictionService {
             // suppressed via familyVisaPauseSeverity (0 = no effect).
             double severity = Math.max(0.0, Math.min(1.0, applicant.getFamilyVisaPauseSeverity()));
             double familyVisasUsed = rawFamilyVisasUsed * (1.0 - severity);
-            fbToEbSpillover = Math.max(0, FAMILY_SPONSORED_FLOOR - familyVisasUsed);
+            double baselineSpillover = Math.max(0, FAMILY_SPONSORED_FLOOR - familyVisasUsed);
             steps.add(String.format(stepNum++ + ". FB-to-EB spillover (INA 201(c)/(d)): family-preference "
-                    + "visa usage (DOS Table VI real figure) = %.0f%s. Statutory floor = %.0f. Spillover = "
+                    + "visa usage (DOS Table VI real figure) = %.0f%s. Statutory floor = %.0f. Baseline spillover = "
                     + "max(0, floor - usage) = max(0, %.0f - %.0f) = %.0f.",
                     rawFamilyVisasUsed,
                     severity > 0 ? String.format(", reduced %.0f%% for estimated consular-pause severity -> %.0f", severity * 100, familyVisasUsed) : "",
-                    FAMILY_SPONSORED_FLOOR, FAMILY_SPONSORED_FLOOR, familyVisasUsed, fbToEbSpillover));
+                    FAMILY_SPONSORED_FLOOR, FAMILY_SPONSORED_FLOOR, familyVisasUsed, baselineSpillover));
+
+            // FIX (2026-09-26): the baseline above is FY2024's real aggregate
+            // shortfall -- a year before Proclamation 10998 existed, so it
+            // can't reflect what currently-restricted countries' zeroed-out
+            // family demand does to the family system. Modeled separately:
+            // INA 202(a)(5)'s two-level redistribution (horizontal within
+            // category, capped at each backlogged country's real COMBINED
+            // 15,820 ceiling; vertical cascade F1->F3, F2A/F2B->F4, F3->F4),
+            // using real Table VI category-level data, not a naive "just
+            // subtract their usage" assumption (which this app tried and
+            // rejected -- see GAPS_AND_FIXES.md for why that overstates the
+            // effect). Whatever genuinely can't be absorbed anywhere in FB
+            // is additional, real spillover on top of the baseline.
+            double restrictionAdjustedSpillover = familyPreferenceSpilloverService.calculateRestrictionAdjustedSpillover();
+            fbToEbSpillover = baselineSpillover + restrictionAdjustedSpillover;
+            steps.add(String.format(stepNum++ + ". Restriction-adjusted FB-to-EB spillover: modeled how much of the "
+                    + "family-preference capacity currently-restricted countries would normally use (per Table VI) "
+                    + "genuinely can't be absorbed by other backlogged countries after INA 202(a)(5)'s two-level "
+                    + "redistribution (within-category, then F1->F3/F2A+F2B->F4/F3->F4 cascade) = %.0f. Total "
+                    + "spillover = baseline %.0f + restriction-adjusted %.0f = %.0f.",
+                    restrictionAdjustedSpillover, baselineSpillover, restrictionAdjustedSpillover, fbToEbSpillover));
         }
 
         // FIX (2026-09-26): per-country caps and the base category split are

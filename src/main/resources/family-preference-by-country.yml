@@ -1,0 +1,67 @@
+# Source: DOS Table VI Part I ("Preference Visas Issued", Family Preferences),
+# FY2024 -- same PDFs as family-visa-usage.yml (Table VI_PartI.pdf at the repo
+# root). Provides the per-country, per-category breakdown needed to model
+# INA 202(a)(5)'s two-level family-preference redistribution (horizontal
+# within-category, capped at each country's combined 7% ceiling except the
+# F2A-exempt 75%; vertical cascade F1->F3, F2A/F2B->F4, F3->F4) -- see
+# FamilyPreferenceSpilloverService for the calculation itself.
+#
+# Categories: f1 (unmarried sons/daughters of US citizens), f2a-exempt (75%
+# of spouses/children of LPRs, exempt from the per-country cap per INA
+# 202(a)(4)(A)), f2a-subject (the remaining 25%, capped), f2b (unmarried
+# sons/daughters 21+ of LPRs), f3 (married sons/daughters of US citizens),
+# f4 (siblings of US citizens).
+#
+# "mexico", "philippines", "india", "china" are the only countries
+# individually tracked -- the same four (plus Brazil, which the EB side
+# tracks but which has negligible FB volume) that are traditionally
+# oversubscribed in family-preference categories, mirroring the EB model's
+# "named countries + Rest of World" simplification. "restricted" is the
+# SUM across all ~39 countries currently on the Proclamation 10998 list
+# (computed by hand from Table VI Part I; see GAPS_AND_FIXES.md for the
+# per-country detail). "worldwide" is Table VI Part I's own Grand Totals
+# row, used to derive Rest-of-World's real demand (worldwide minus the
+# four named countries minus restricted).
+family-preference-fy2024:
+  mexico:
+    f1: 2206
+    f2a-exempt: 16297
+    f2a-subject: 0
+    f2b: 2249
+    f3: 2275
+    f4: 6585
+  philippines:
+    f1: 2845
+    f2a-exempt: 2860
+    f2a-subject: 280
+    f2b: 2943
+    f3: 1410
+    f4: 3414
+  india:
+    f1: 163
+    f2a-exempt: 732
+    f2a-subject: 504
+    f2b: 206
+    f3: 3806
+    f4: 4546
+  china:
+    f1: 272
+    f2a-exempt: 868
+    f2a-subject: 324
+    f2b: 363
+    f3: 1033
+    f4: 3634
+  restricted:
+    f1: 1989
+    f2a-exempt: 4840
+    f2a-subject: 3075
+    f2b: 1842
+    f3: 1726
+    f4: 2623
+  worldwide:
+    f1: 21428
+    f2a-exempt: 60815
+    f2a-subject: 13073
+    f2b: 24610
+    f3: 21971
+    f4: 63865

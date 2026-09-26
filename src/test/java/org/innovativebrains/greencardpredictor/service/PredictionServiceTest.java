@@ -45,11 +45,13 @@ import static org.mockito.Mockito.when;
 class PredictionServiceTest {
     private final ExcelDataService excelDataService = new ExcelDataService();
     private final VisaBulletinService visaBulletinService = new VisaBulletinService(loadVisaBulletinProperties());
+    private final FamilyPreferenceSpilloverService familyPreferenceSpilloverService = new FamilyPreferenceSpilloverService();
     private final PredictionService predictionService;
 
     public PredictionServiceTest() {
         excelDataService.init();
-        this.predictionService = new PredictionService(excelDataService, visaBulletinService);
+        familyPreferenceSpilloverService.init();
+        this.predictionService = new PredictionService(excelDataService, visaBulletinService, familyPreferenceSpilloverService);
     }
 
     /**
