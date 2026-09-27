@@ -52,8 +52,8 @@ flowchart TB
     classDef statute fill:#eef2ff,stroke:#4f46e5,stroke-width:1px,color:#1e1b4b
     classDef data fill:#ecfdf5,stroke:#059669,stroke-width:1px,color:#064e3b
 
-    A["<b>1. FB-to-EB Spillover</b><br/>INA §201(d)<br/><br/>226,000 − family-preference<br/>visas actually used last FY<br/>= visas that spill to EB,<br/>entering only at EB-1"]:::statute
-    B["<b>2. Per-Country Caps</b><br/>INA §202(a)(2)<br/><br/>No single country may draw<br/>more than 7% of the fixed<br/>140,000 EB base"]:::statute
+    A["<b>1. FB-to-EB Spillover</b><br/>INA §201(d)<br/><br/>Already reflected in the<br/>bulletin's published worldwide<br/>EB limit (186,317 for FY2026) —<br/>this app models it separately<br/>only as a comparison estimate"]:::statute
+    B["<b>2. Per-Country Caps</b><br/>INA §202(a)(2)<br/><br/>No single country may draw<br/>more than 7% of family + EB<br/>COMBINED (29,136 for FY2026),<br/>published directly each month"]:::statute
     C["<b>3. Category Waterfall +<br/>Priority-Date Redistribution</b><br/>INA §203(b) / §202(a)(5)<br/><br/>EB-1 → EB-2 → EB-3 cascade;<br/>within each category, unused<br/>numbers go to oversubscribed<br/>countries strictly by<br/>priority-date order"]:::statute
 
     D[("DOS Table VI<br/>(real FY2024 data)")]:::data
@@ -75,6 +75,14 @@ flowchart TB
 Congress sets a **226,000/year floor** for family-sponsored visas. Whatever of that floor goes
 unused in a fiscal year rolls over to the employment-based pool the *next* year — entering
 specifically at **EB-1**, not spread across all three categories.
+
+**As of the fix documented in [`GAPS_AND_FIXES.md` #16](GAPS_AND_FIXES.md):** the current bulletin
+publishes the worldwide EB annual limit directly (186,317 for FY2026), and that number already has
+whatever spillover actually happened this fiscal year baked in — DOS computes it from real USCIS
+data before the bulletin goes out. So the default prediction path uses that published total as-is
+rather than re-deriving an estimate of it. The modeling below still runs on every request and is
+shown in the API's `reasoningSteps`, but purely as a sanity-check comparison against the real
+number — it no longer feeds the actual supply calculation.
 
 ```mermaid
 flowchart LR
@@ -132,24 +140,31 @@ documented simplification: [`GAPS_AND_FIXES.md` #15](GAPS_AND_FIXES.md).
 ### Mechanism 2 — Per-Country Caps (INA §202(a)(2))
 
 Only five countries currently have their own named line on the Visa Bulletin's per-country chart —
-**India, China, Mexico, Philippines, Brazil** — each capped at 7% of the fixed 140,000 base
-(~9,800). Every other country falls under *"All Chargeability Areas Except Those Listed"* (ROW),
-sharing the remaining 65%.
+**India, China, Mexico, Philippines, Brazil** — each capped at 7% of the family-sponsored *and*
+employment-based limits **combined** (226,000 + 186,317 = 412,317 for FY2026 → **29,136**, including
+the EB-5 carryover under INA §203(b)(5)(B); DOS also publishes 28,862 without it). This app reads
+both the worldwide EB limit and this per-country cap straight from the current bulletin
+(`visa-bulletin.yml`) rather than deriving either — see
+[`GAPS_AND_FIXES.md` #16](GAPS_AND_FIXES.md) for why re-deriving them from a fixed 140,000 base was
+off by roughly 26,000. Every other country falls under *"All Chargeability Areas Except Those
+Listed"* (ROW), sharing whatever remains of the worldwide limit after the five named countries'
+caps.
 
 ```mermaid
 flowchart TB
-    T["140,000 EB Base"] --> I["India<br/>7% (~9,800)"]
-    T --> C["China<br/>7% (~9,800)"]
-    T --> M["Mexico<br/>7% (~9,800)"]
-    T --> P["Philippines<br/>7% (~9,800)"]
-    T --> B["Brazil<br/>7% (~9,800)"]
-    T --> R["Rest of World<br/>65% (~91,000)"]
+    T["186,317 Worldwide EB Limit<br/>(published each month)"] --> I["India<br/>29,136"]
+    T --> C["China<br/>29,136"]
+    T --> M["Mexico<br/>29,136"]
+    T --> P["Philippines<br/>29,136"]
+    T --> B["Brazil<br/>29,136"]
+    T --> R["Rest of World<br/>remainder (~40,637)"]
 ```
 
 Every other country enum in the codebase (restricted or not) gets **zero** individual base
 allocation — it can only receive supply through redistribution, exactly like the real bulletin's
 "All Chargeability Areas" treatment. Giving every country its own 7% share was a real bug found and
-fixed this year (see GAPS_AND_FIXES.md #9).
+fixed this year (see GAPS_AND_FIXES.md #9); a related bug in how ROW's residual was computed once
+the per-country cap stopped being a flat 7% of the EB base was found and fixed in #16.
 
 ### Mechanism 3 — The Waterfall + Priority-Date Redistribution (INA §203(b) / §202(a)(5))
 
@@ -161,7 +176,7 @@ flowchart TB
 
     subgraph EB1[" EB-1 "]
         direction TB
-        EB1Base["Base 7% allocation<br/>+ EB-4/EB-5 residual<br/>(14.2%, folded up)"] --> EB1Pool["Pool = unused base<br/>+ incoming spillover"]
+        EB1Base["Base per-country-cap<br/>allocation<br/>+ EB-4/EB-5 residual<br/>(14.2%, folded up)"] --> EB1Pool["Pool = unused base<br/>+ incoming spillover"]
         EB1Pool --> EB1Redist{{"Priority-date-ordered<br/>redistribution across<br/>oversubscribed countries"}}
     end
 
@@ -169,7 +184,7 @@ flowchart TB
 
     subgraph EB2[" EB-2 "]
         direction TB
-        EB2Base["Base 7% allocation<br/>+ EB-1 leftover"] --> EB2Pool["Pool = unused base<br/>+ incoming leftover"]
+        EB2Base["Base per-country-cap<br/>allocation<br/>+ EB-1 leftover"] --> EB2Pool["Pool = unused base<br/>+ incoming leftover"]
         EB2Pool --> EB2Redist{{"Priority-date-ordered<br/>redistribution"}}
     end
 
@@ -177,7 +192,7 @@ flowchart TB
 
     subgraph EB3[" EB-3 "]
         direction TB
-        EB3Base["Base 7% allocation<br/>+ EB-2 leftover"] --> EB3Pool["Pool = unused base<br/>+ incoming leftover"]
+        EB3Base["Base per-country-cap<br/>allocation<br/>+ EB-2 leftover"] --> EB3Pool["Pool = unused base<br/>+ incoming leftover"]
         EB3Pool --> EB3Redist{{"Priority-date-ordered<br/>redistribution"}}
     end
 
@@ -247,23 +262,25 @@ Every prediction includes a `reasoningSteps` array — the calculation's own tra
 
 ```json
 {
-  "formattedFilingWait": "September 2030",
-  "formattedFinalActionWait": "April 2032",
+  "formattedFilingWait": "August 2029",
+  "formattedFinalActionWait": "October 2030",
   "reasoningSteps": [
     "1. Checked restriction status for INDIA: not restricted.",
-    "2. FB-to-EB spillover (INA 201(c)/(d)): family-preference visa usage (DOS Table VI real figure) = 205762. Statutory floor = 226000. Baseline spillover = max(0, floor - usage) = max(0, 226000 - 205762) = 20238.",
-    "3. Restriction-adjusted FB-to-EB spillover: modeled how much of the family-preference capacity currently-restricted countries would normally use (per Table VI) genuinely can't be absorbed by other backlogged countries after INA 202(a)(5)'s two-level redistribution (within-category, then F1->F3/F2A+F2B->F4/F3->F4 cascade) = 0. Total spillover = baseline 20238 + restriction-adjusted 0 = 20238.",
-    "4. Base EB pool = 140000 (fixed statutory floor, INA 201(d)). Individual per-country cap (7% of the fixed base, applies only to [INDIA, CHINA, PHILIPPINES, MEXICO, BRAZIL]) = 9800. ...",
-    "5. Ran the full supply model: base allocation (from the fixed base only), FB spillover injected at EB-1, EB1->EB2->EB3 waterfall with horizontal (cross-country, priority-date-ordered) redistribution ...",
-    "6. INDIA EB3 resulting annual supply (after redistribution): ~10692.",
+    "2. Worldwide EB annual limit = 186317 and per-country cap = 29136 (published directly in the September 2026 bulletin -- INA 202(a)(2)'s 7% ceiling on family+EB combined, not derived from a fixed base).",
+    "3. FB-to-EB spillover: not modeled separately in the default path, since the published worldwide EB limit above already reflects whatever spillover actually occurred this fiscal year (DOS computes it from real USCIS data before publishing the bulletin).",
+    "4. (Informational only) this app's own modeled FB-to-EB spillover estimate, for comparison against the published total: family-preference usage 205762 vs. floor 226000 -> baseline 20238, plus restriction-adjusted 0 (INA 202(a)(5) redistribution) = 20238. Modeled EB base (140000 + 20238 = 160238) vs. published 186317.",
+    "5. Ran the full supply model: base allocation (from the published worldwide limit and per-country cap above), FB spillover injected at EB-1, EB1->EB2->EB3 waterfall with horizontal (cross-country, priority-date-ordered) redistribution ...",
+    "6. INDIA EB3 resulting annual supply (after redistribution): ~14605.",
     "7. September 2026 bulletin Filing Cut-off for INDIA EB3: 2015-01-15.",
     "8. Backlog (I-485 inventory + I-140 approvals) between the Filing Cut-off and priority date 2019-12-16: 43268 cases ahead of you.",
     "9. September 2026 bulletin Final Action Cut-off for INDIA EB3: 2014-01-01.",
-    "10. Filing wait = 43268 / 10692 * 12 = 48 months; Final Action wait = ...",
-    "Conclusion: Filing September 2030, Final Action April 2032."
+    "10. Filing wait = 43268 / 14605 * 12 = 35 months; Final Action wait = ...",
+    "Conclusion: Filing August 2029, Final Action October 2030."
   ]
 }
 ```
+
+(Real, code-computed output — this app's own estimate of what the published worldwide limit "should" be, 160,238, is now visibly ~26,000 short of the real 186,317, which is exactly the discrepancy [`GAPS_AND_FIXES.md` #16](GAPS_AND_FIXES.md) fixed: the *supply calculation* uses the real 186,317/29,136 figures, while step 4's comparison line shows how far off this app's own bottom-up model still is.)
 
 ## API
 

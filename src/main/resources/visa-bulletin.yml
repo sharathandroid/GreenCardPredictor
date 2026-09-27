@@ -12,6 +12,30 @@
 # file existed.
 visa-bulletin:
   month: "September 2026"
+  # FIX (2026-09-27): real numbers from the September 2026 bulletin text
+  # itself (paragraphs 2 and D), pasted directly by the project owner --
+  # replacing this app's earlier derived estimate (140,000 base + a
+  # Table-VI/FB-model-computed spillover, which came out to 160,238 --
+  # ~26,000 short of the real number). DOS's published total already
+  # incorporates whatever spillover actually happened this fiscal year
+  # (paragraph D: computed from real USCIS immediate-relative-adjustment
+  # and parolee data submitted July 24, 2026), so using it directly is
+  # strictly more accurate than re-deriving an approximation of the same
+  # number every prediction.
+  #
+  # worldwide-eb-limit: "The worldwide level for annual employment-based
+  # preference immigrants is 186,317" (paragraph 2).
+  #
+  # per-country-cap: paragraph D gives two figures -- 28,862 (7% of the
+  # combined family 226,000 + employment 186,317 = 412,317 total, per INA
+  # 202(a)(2)) and 29,136 "with... carryover [numbers] included" (INA
+  # 203(b)(5)(B), the EB-5 carryover provision). 29,136 is used here as the
+  # more complete figure per the bulletin's own description; if a future
+  # bulletin's text is ambiguous about which to use, prefer the
+  # carryover-inclusive one, since that's what actually governs real
+  # issuance capacity for the year.
+  worldwide-eb-limit: 186317
+  per-country-cap: 29136
   final-action:
     INDIA:
       EB1: "2022-10-15"

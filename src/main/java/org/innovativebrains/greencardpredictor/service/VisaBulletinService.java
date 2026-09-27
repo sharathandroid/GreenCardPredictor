@@ -43,13 +43,26 @@ public class VisaBulletinService {
 
     private static final LocalDate DEFAULT_CUTOFF = LocalDate.of(2010, 1, 1);
 
+    // Fallbacks only for a visa-bulletin.yml that predates the
+    // worldwide-eb-limit/per-country-cap keys (FIX 2026-09-27, see
+    // GAPS_AND_FIXES.md #16). Real bulletins always publish both numbers
+    // directly, so these should never be hit once the yml is kept current.
+    private static final long DEFAULT_WORLDWIDE_EB_LIMIT = 140_000L;
+    private static final long DEFAULT_PER_COUNTRY_CAP = 9_800L;
+
     private final String bulletinMonth;
+    private final long worldwideEbLimit;
+    private final long perCountryCap;
     private final Map<String, LocalDate> finalActionDates = new HashMap<>();
     private final Map<String, LocalDate> filingDates = new HashMap<>();
     private final Set<String> unauthorizedFinalAction = new HashSet<>();
 
     public VisaBulletinService(VisaBulletinProperties properties) {
         this.bulletinMonth = properties.getMonth();
+        this.worldwideEbLimit = properties.getWorldwideEbLimit() != null
+                ? properties.getWorldwideEbLimit() : DEFAULT_WORLDWIDE_EB_LIMIT;
+        this.perCountryCap = properties.getPerCountryCap() != null
+                ? properties.getPerCountryCap() : DEFAULT_PER_COUNTRY_CAP;
 
         properties.getFinalAction().forEach((countryKey, byCategory) ->
             byCategory.forEach((categoryKey, value) -> {
@@ -72,6 +85,26 @@ public class VisaBulletinService {
 
     public String getBulletinMonth() {
         return bulletinMonth;
+    }
+
+    /**
+     * The real published worldwide EB annual limit for the current bulletin
+     * (e.g. 186,317 for FY2026), taken directly from visa-bulletin.yml. See
+     * GAPS_AND_FIXES.md #16 for why this replaced a hardcoded 140,000 base.
+     */
+    public long getWorldwideEbLimit() {
+        return worldwideEbLimit;
+    }
+
+    /**
+     * The real published per-country EB ceiling for the current bulletin
+     * (7% of family + employment combined, per INA 202(a)(2), plus any
+     * EB-5 carryover per INA 203(b)(5)(B)) -- e.g. 29,136 for FY2026. Taken
+     * directly from visa-bulletin.yml rather than derived as 7% of the EB
+     * limit alone. See GAPS_AND_FIXES.md #16.
+     */
+    public long getPerCountryCap() {
+        return perCountryCap;
     }
 
     private static Country parseCountry(String key) {

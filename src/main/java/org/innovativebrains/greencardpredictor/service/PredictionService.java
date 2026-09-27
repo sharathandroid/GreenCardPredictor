@@ -89,17 +89,20 @@ public class PredictionService {
         this.familyPreferenceSpilloverService = familyPreferenceSpilloverService;
     }
 
-    // Total Employment-Based (EB) annual limit is approx 140,000 (INA 201(d)).
+    // FIX (2026-09-27, GAPS_AND_FIXES.md #16): the real worldwide EB limit and
+    // per-country cap now come from the bulletin itself (visaBulletinService,
+    // backed by visa-bulletin.yml), not from these fixed statutory-floor
+    // constants -- see predict()'s baseAnnualEbLimit/countryAnnualLimit.
+    // BASE_ANNUAL_EB_LIMIT is kept only as the base for this app's own
+    // informational spillover estimate (a comparison figure shown in
+    // reasoningSteps, no longer used for the actual supply calculation).
     private static final double BASE_ANNUAL_EB_LIMIT = 140000;
 
-    // Per-country cap is 7% of the total EB limit (INA 202(a)(2)) -- but that
-    // cap only applies to countries actually named on the Visa Bulletin's
-    // per-country chart (currently India, China, Mexico, Philippines, and
-    // Brazil; see PREDICTION_STRATEGY.md's "Apply 7% Country Cap" section).
+    // The five countries actually named on the Visa Bulletin's per-country
+    // chart (see PREDICTION_STRATEGY.md's "Apply 7% Country Cap" section).
     // Every other country falls under "All Chargeability Areas Except Those
-    // Listed" (ROW) and draws ONLY from ROW's shared 65% allocation, not an
-    // individual 7% of their own.
-    private static final double COUNTRY_CAP_PERCENTAGE = 0.07;
+    // Listed" (ROW) and draws only from ROW's shared residual allocation, not
+    // an individual per-country cap of their own.
     private static final Set<Country> INDIVIDUALLY_CAPPED_COUNTRIES = EnumSet.of(
             Country.INDIA, Country.CHINA, Country.MEXICO, Country.PHILIPPINES, Country.BRAZIL);
 
@@ -201,71 +204,67 @@ public class PredictionService {
         // limit against family visas ACTUALLY USED last FY, not against
         // the pending I-130 petition backlog (a demand queue running into
         // the millions, which made the old formula always clamp to zero).
+        // FIX (2026-09-27, GAPS_AND_FIXES.md #16): the worldwide EB limit and
+        // per-country cap are now taken directly from the current bulletin
+        // (visa-bulletin.yml), not derived from a hardcoded 140,000 base.
+        // DOS publishes both numbers outright each month (e.g. September
+        // 2026: worldwide EB limit 186,317; per-country cap 29,136, 7% of
+        // family+EB combined per INA 202(a)(2) plus EB-5 carryover under INA
+        // 203(b)(5)(B)), computed from real USCIS data DOS already has --
+        // including whatever FB-to-EB spillover actually occurred this
+        // fiscal year. Re-deriving an estimate of that same number from a
+        // fixed base plus a modeled spillover is strictly less accurate than
+        // using DOS's own published total, so the modeled estimate below is
+        // now informational only (shown in reasoningSteps for comparison)
+        // and no longer feeds the supply calculation in the default path.
+        double baseAnnualEbLimit = visaBulletinService.getWorldwideEbLimit();
+        double countryAnnualLimit = visaBulletinService.getPerCountryCap();
+        steps.add(String.format(stepNum++ + ". Worldwide EB annual limit = %.0f and per-country cap = %.0f "
+                + "(published directly in the %s bulletin -- INA 202(a)(2)'s 7%% ceiling on family+EB combined, "
+                + "not derived from a fixed base).",
+                baseAnnualEbLimit, countryAnnualLimit, visaBulletinService.getBulletinMonth()));
+
         double fbToEbSpillover;
         if (applicant.getManualFbSpillover() != null) {
+            // A manual override represents a hypothetical scenario (e.g.
+            // "what if the consular pause pushes X more family numbers to
+            // EB-1 than the published total already reflects") -- it's
+            // additional to the real published worldwide limit above, not a
+            // replacement for it.
             fbToEbSpillover = applicant.getManualFbSpillover();
-            steps.add(stepNum++ + ". FB-to-EB spillover: manual override supplied = " + fbToEbSpillover + ".");
+            steps.add(stepNum++ + ". FB-to-EB spillover: manual override supplied = " + fbToEbSpillover
+                    + " (treated as additional to the published worldwide limit above, entering only at EB-1).");
         } else {
+            fbToEbSpillover = 0;
+            steps.add(stepNum++ + ". FB-to-EB spillover: not modeled separately in the default path, since the "
+                    + "published worldwide EB limit above already reflects whatever spillover actually occurred "
+                    + "this fiscal year (DOS computes it from real USCIS data before publishing the bulletin).");
+
+            // Kept for comparison only -- this is this app's own estimate of
+            // the same figure DOS already publishes above, useful for
+            // sanity-checking the model against a real bulletin but not fed
+            // into the supply calculation.
             double rawFamilyVisasUsed = excelDataService.getFamilyVisasUsedPriorFiscalYear();
-            // The ongoing worldwide consular-interview pause (DOS, ~Aug 25,
-            // 2026 onward; primarily affects family-based cases -- see
-            // GAPS_AND_FIXES.md) further suppresses family visa usage. A
-            // caller can estimate how much of the fiscal year it will have
-            // suppressed via familyVisaPauseSeverity (0 = no effect).
             double severity = Math.max(0.0, Math.min(1.0, applicant.getFamilyVisaPauseSeverity()));
             double familyVisasUsed = rawFamilyVisasUsed * (1.0 - severity);
             double baselineSpillover = Math.max(0, FAMILY_SPONSORED_FLOOR - familyVisasUsed);
-            steps.add(String.format(stepNum++ + ". FB-to-EB spillover (INA 201(c)/(d)): family-preference "
-                    + "visa usage (DOS Table VI real figure) = %.0f%s. Statutory floor = %.0f. Baseline spillover = "
-                    + "max(0, floor - usage) = max(0, %.0f - %.0f) = %.0f.",
+            double restrictionAdjustedSpillover = familyPreferenceSpilloverService.calculateRestrictionAdjustedSpillover();
+            double modeledSpilloverEstimate = baselineSpillover + restrictionAdjustedSpillover;
+            steps.add(String.format(stepNum++ + ". (Informational only) this app's own modeled FB-to-EB spillover "
+                    + "estimate, for comparison against the published total: family-preference usage %.0f%s vs. "
+                    + "floor %.0f -> baseline %.0f, plus restriction-adjusted %.0f (INA 202(a)(5) redistribution) "
+                    + "= %.0f. Modeled EB base (%.0f + %.0f = %.0f) vs. published %.0f.",
                     rawFamilyVisasUsed,
                     severity > 0 ? String.format(", reduced %.0f%% for estimated consular-pause severity -> %.0f", severity * 100, familyVisasUsed) : "",
-                    FAMILY_SPONSORED_FLOOR, FAMILY_SPONSORED_FLOOR, familyVisasUsed, baselineSpillover));
-
-            // FIX (2026-09-26): the baseline above is FY2024's real aggregate
-            // shortfall -- a year before Proclamation 10998 existed, so it
-            // can't reflect what currently-restricted countries' zeroed-out
-            // family demand does to the family system. Modeled separately:
-            // INA 202(a)(5)'s two-level redistribution (horizontal within
-            // category, capped at each backlogged country's real COMBINED
-            // 15,820 ceiling; vertical cascade F1->F3, F2A/F2B->F4, F3->F4),
-            // using real Table VI category-level data, not a naive "just
-            // subtract their usage" assumption (which this app tried and
-            // rejected -- see GAPS_AND_FIXES.md for why that overstates the
-            // effect). Whatever genuinely can't be absorbed anywhere in FB
-            // is additional, real spillover on top of the baseline.
-            double restrictionAdjustedSpillover = familyPreferenceSpilloverService.calculateRestrictionAdjustedSpillover();
-            fbToEbSpillover = baselineSpillover + restrictionAdjustedSpillover;
-            steps.add(String.format(stepNum++ + ". Restriction-adjusted FB-to-EB spillover: modeled how much of the "
-                    + "family-preference capacity currently-restricted countries would normally use (per Table VI) "
-                    + "genuinely can't be absorbed by other backlogged countries after INA 202(a)(5)'s two-level "
-                    + "redistribution (within-category, then F1->F3/F2A+F2B->F4/F3->F4 cascade) = %.0f. Total "
-                    + "spillover = baseline %.0f + restriction-adjusted %.0f = %.0f.",
-                    restrictionAdjustedSpillover, baselineSpillover, restrictionAdjustedSpillover, fbToEbSpillover));
+                    FAMILY_SPONSORED_FLOOR, baselineSpillover, restrictionAdjustedSpillover, modeledSpilloverEstimate,
+                    BASE_ANNUAL_EB_LIMIT, modeledSpilloverEstimate, BASE_ANNUAL_EB_LIMIT + modeledSpilloverEstimate, baseAnnualEbLimit));
         }
 
-        // FIX (2026-09-26): per-country caps and the base category split are
-        // now computed from the fixed 140,000 statutory base ONLY -- INA
-        // 202(a)(2)'s 7% ceiling is a share of the actual visas made
-        // available for the year, but spillover isn't blended into that
-        // base pool anymore either; it enters separately, only at EB-1 (see
-        // calculateDynamicSupply's carry-in seed below), not spread evenly
-        // across EB-1/EB-2/EB-3 by inflating a combined total upfront. That
-        // was flagged as a real discrepancy against INA 201(d)/203(b) --
-        // spillover cascades down FROM EB-1 through the normal waterfall,
-        // it doesn't arrive pre-split into all three categories at once.
-        double countryAnnualLimit = BASE_ANNUAL_EB_LIMIT * COUNTRY_CAP_PERCENTAGE;
-        steps.add(String.format(stepNum++ + ". Base EB pool = %.0f (fixed statutory floor, INA 201(d)). "
-                + "Individual per-country cap (7%% of the fixed base, applies only to %s) = %.0f. "
-                + "FB-to-EB spillover (%.0f) is NOT blended into this base -- it enters separately, only at "
-                + "EB-1, per INA 203(b)'s waterfall.",
-                BASE_ANNUAL_EB_LIMIT, INDIVIDUALLY_CAPPED_COUNTRIES, countryAnnualLimit, fbToEbSpillover));
-
         Map<Country, Map<EbCategory, Double>> supplyMap =
-                calculateDynamicSupply(BASE_ANNUAL_EB_LIMIT, countryAnnualLimit, fbToEbSpillover, applicant.isConsularShutdown());
-        steps.add(stepNum++ + ". Ran the full supply model: base allocation (from the fixed base only), FB "
-                + "spillover injected at EB-1, EB1->EB2->EB3 waterfall with horizontal (cross-country, "
-                + "priority-date-ordered) redistribution running within each category before any leftover "
+                calculateDynamicSupply(baseAnnualEbLimit, countryAnnualLimit, fbToEbSpillover, applicant.isConsularShutdown());
+        steps.add(stepNum++ + ". Ran the full supply model: base allocation (from the published worldwide limit "
+                + "and per-country cap above), FB spillover injected at EB-1, EB1->EB2->EB3 waterfall with "
+                + "horizontal (cross-country, priority-date-ordered) redistribution running within each category before any leftover "
                 + "cascades to the next one down (incl. EB4/EB5 residual folded into EB1)"
                 + (applicant.isConsularShutdown() ? " (consular-shutdown mode: EB2 prioritized)." : "."));
 
@@ -493,7 +492,21 @@ public class PredictionService {
             Map<EbCategory, Double> catSupply = new HashMap<>();
             double countryLimit;
             if (c == Country.ROW) {
-                countryLimit = baseAnnualEbLimit * (1 - (INDIVIDUALLY_CAPPED_COUNTRIES.size() * COUNTRY_CAP_PERCENTAGE));
+                // FIX (2026-09-27, GAPS_AND_FIXES.md #16): countryAnnualLimit
+                // is now the real published per-country cap (7% of family+EB
+                // COMBINED, e.g. 29,136), not 7% of baseAnnualEbLimit alone
+                // (which would be ~13,042) -- so ROW's residual must be
+                // computed against the actual per-country cap being used for
+                // the named five, not by re-deriving a percentage against a
+                // different, smaller base. Using the old "baseAnnualEbLimit *
+                // (1 - 5*7%)" formula here would double-count: the five named
+                // countries already get the larger, real countryAnnualLimit
+                // each, and re-subtracting only 7% of the (smaller) EB base
+                // for each of them left ROW claiming far more than what
+                // remained, pushing the sum of all base allocations above
+                // the published worldwide total.
+                countryLimit = Math.max(0,
+                        baseAnnualEbLimit - (INDIVIDUALLY_CAPPED_COUNTRIES.size() * countryAnnualLimit));
             } else if (INDIVIDUALLY_CAPPED_COUNTRIES.contains(c)) {
                 countryLimit = countryAnnualLimit;
             } else {

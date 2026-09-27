@@ -384,6 +384,48 @@ Rest-of-World's own absorption capacity isn't modeled at all (conservative: can 
 report *more* unabsorbed leftover than reality, never less); F2A-exempt is assumed fully absorbed
 by real ongoing demand rather than computed from data this app doesn't have.
 
+## 16. Worldwide EB limit and per-country cap were derived, not real — FIXED 2026-09-27
+
+The project owner pasted the complete text of the real September 2026 Visa Bulletin. Cross-checking
+it against this app exposed the biggest remaining discrepancy: this app computed the annual EB
+supply from a hardcoded `BASE_ANNUAL_EB_LIMIT = 140,000` (INA 201(d)'s statutory floor) plus a
+modeled FB-to-EB spillover estimate (item #15's baseline + restriction-adjusted terms), landing at
+roughly 160,238. The bulletin states the real figures directly:
+
+- **Worldwide EB annual limit: 186,317** ("2. The worldwide level for annual employment-based
+  preference immigrants is 186,317").
+- **Per-country cap: 29,136** (7% of the family-sponsored 226,000 + employment-based 186,317 =
+  412,317 combined, per INA 202(a)(2), with the EB-5 carryover under INA 203(b)(5)(B) included; the
+  bulletin also gives 28,862 as the figure without that carryover).
+
+DOS computes 186,317 from real USCIS immediate-relative-adjustment and parolee data it already has
+before publishing each bulletin — meaning it already reflects whatever FB-to-EB spillover actually
+occurred this fiscal year. Re-deriving an estimate of that same number every prediction (as items
+#1 and #15 did) can only ever approximate what DOS just tells you outright, and the approximation
+was off by about 26,000 — enough to materially change every wait-time prediction in the app.
+
+**Fix:** `visa-bulletin.yml` now carries `worldwide-eb-limit` and `per-country-cap` alongside the
+existing cutoff dates (same "update the data file monthly, no Java change" pattern as item #5),
+bound via new `VisaBulletinProperties`/`VisaBulletinService` fields. `PredictionService.predict()`'s
+default (non-manual-override) path now uses these real published numbers directly as
+`baseAnnualEbLimit`/`countryAnnualLimit`, with `fbToEbSpillover = 0` (already embedded in the
+published total). The `manualFbSpillover` override is unchanged in spirit but now means "additional
+to the published total" (a hypothetical, e.g. testing a bigger future consular-pause effect), not a
+guess at what the total itself is. Item #15's modeled estimate is kept and still runs on every
+request, but now purely as an informational comparison line in `reasoningSteps` — useful for
+sanity-checking this app's own model against a real bulletin, no longer load-bearing for the actual
+calculation.
+
+**A second bug found while wiring this in:** `calculateDynamicSupply()`'s Rest-of-World allocation
+used to be computed as `baseAnnualEbLimit * (1 - 5×7%)` — correct only when the per-country cap
+really is 7% of `baseAnnualEbLimit` alone. Once `countryAnnualLimit` became the real 29,136 (7% of
+the larger *combined* family+EB total, not of the EB base by itself), that formula would have let
+the five named countries' allocations (5 × 29,136 = 145,680) and ROW's re-derived 65% share
+(186,317 × 0.65 = 121,106) sum to 266,786 — more than the entire 186,317 published total. Fixed to
+`baseAnnualEbLimit − (5 × countryAnnualLimit)` (clamped at 0), so the base allocations always sum to
+exactly the published worldwide limit, whatever the per-country cap's actual relationship to that
+limit turns out to be in a future bulletin.
+
 ## About GitHub repo access
 
 This analysis was originally done without GitHub access (reconstructed from an indexed copy of
